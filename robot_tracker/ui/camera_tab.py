@@ -1,1639 +1,804 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-robot_tracker/ui/trajectory_tab.py
-Onglet de gestion des trajectoires - Version 1.0
-Modification: Interface de base avec chargement de fichiers et visualisation
-"""
-
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                           QLabel, QComboBox, QListWidget, QGroupBox, QTextEdit,
-                           QFileDialog, QProgressBar, QSplitter, QTableWidget,
-                           QTableWidgetItem, QHeaderView, QApplication)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
-import logging
-import os
-
-logger = logging.getLogger(__name__)
-
-class TrajectoryTab(QWidget):
-    """Onglet pour le chargement et visualisation des trajectoires"""
-    
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        
-        # État des trajectoires
-        self.loaded_files = []
-        self.current_trajectory = None
-        
-        self.setup_ui()
-        logger.info("📊 TrajectoryTab initialisé")
-    
-    def setup_ui(self):
-        """Configuration de l'interface"""
-        layout = QHBoxLayout(self)
-        
-        # Splitter principal
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
-        
-        # === Panneau de contrôle (gauche) ===
-        control_panel = self.create_control_panel()
-        splitter.addWidget(control_panel)
-        
-        # === Zone de visualisation (droite) ===
-        visualization_panel = self.create_visualization_panel()
-        splitter.addWidget(visualization_panel)
-        
-        # Proportions
-        splitter.setSizes([350, 650])
-    
-    def create_control_panel(self):
-        """Création du panneau de contrôle"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # === Chargement de fichiers ===
-        file_group = QGroupBox("Chargement de Trajectoires")
-        file_layout = QVBoxLayout(file_group)
-        
-        # Boutons de chargement
-        load_buttons = QHBoxLayout()
-        
-        self.load_file_btn = QPushButton("📁 Charger Fichier")
-        self.load_file_btn.clicked.connect(self.load_trajectory_file)
-        load_buttons.addWidget(self.load_file_btn)
-        
-        self.load_folder_btn = QPushButton("📂 Charger Dossier")
-        self.load_folder_btn.clicked.connect(self.load_trajectory_folder)
-        load_buttons.addWidget(self.load_folder_btn)
-        
-        file_layout.addLayout(load_buttons)
-        
-        # Format supportés
-        format_label = QLabel("Formats supportés: VAL3, KRL, RAPID, G-Code")
-        format_label.setStyleSheet("color: #888; font-size: 10px;")
-        file_layout.addWidget(format_label)
-        
-        layout.addWidget(file_group)
-        
-        # === Liste des fichiers chargés ===
-        list_group = QGroupBox("Fichiers Chargés")
-        list_layout = QVBoxLayout(list_group)
-        
-        self.file_list = QListWidget()
-        self.file_list.itemSelectionChanged.connect(self.on_file_selected)
-        list_layout.addWidget(self.file_list)
-        
-        # Boutons de gestion
-        list_buttons = QHBoxLayout()
-        
-        self.preview_btn = QPushButton("👁️ Aperçu")
-        self.preview_btn.clicked.connect(self.preview_trajectory)
-        self.preview_btn.setEnabled(False)
-        list_buttons.addWidget(self.preview_btn)
-        
-        self.remove_btn = QPushButton("🗑️ Supprimer")
-        self.remove_btn.clicked.connect(self.remove_trajectory)
-        self.remove_btn.setEnabled(False)
-        list_buttons.addWidget(self.remove_btn)
-        
-        list_layout.addLayout(list_buttons)
-        layout.addWidget(list_group)
-        
-        # === Informations sur la trajectoire ===
-        info_group = QGroupBox("Informations Trajectoire")
-        info_layout = QVBoxLayout(info_group)
-        
-        self.info_text = QTextEdit()
-        self.info_text.setMaximumHeight(150)
-        self.info_text.setFont(QFont("Courier", 9))
-        self.info_text.setText("Aucune trajectoire sélectionnée")
-        info_layout.addWidget(self.info_text)
-        
-        layout.addWidget(info_group)
-        
-        # === Export et conversion ===
-        export_group = QGroupBox("Export et Conversion")
-        export_layout = QVBoxLayout(export_group)
-        
-        # Format de destination
-        export_layout.addWidget(QLabel("Format de destination:"))
-        self.export_format = QComboBox()
-        self.export_format.addItems(["JSON", "CSV", "VAL3", "KRL", "G-Code"])
-        export_layout.addWidget(self.export_format)
-        
-        self.export_btn = QPushButton("💾 Exporter")
-        self.export_btn.clicked.connect(self.export_trajectory)
-        self.export_btn.setEnabled(False)
-        export_layout.addWidget(self.export_btn)
-        
-        layout.addWidget(export_group)
-        
-        layout.addStretch()
-        return panel
-    
-    def create_visualization_panel(self):
-        """Création du panneau de visualisation"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # Titre
-        title_label = QLabel("Visualisation 3D de la Trajectoire")
-        title_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
-        
-        # Zone de visualisation 3D
-        # TODO: Intégrer Open3D ou matplotlib 3D
-        self.visualization_area = QLabel()
-        self.visualization_area.setMinimumSize(600, 400)
-        self.visualization_area.setStyleSheet("""
-            border: 2px solid #555;
-            background-color: #1a1a1a;
-            border-radius: 5px;
-        """)
-        self.visualization_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.visualization_area.setText("Visualisation 3D\n(Chargez une trajectoire)")
-        layout.addWidget(self.visualization_area)
-        
-        # === Tableau des points ===
-        table_label = QLabel("Points de Trajectoire")
-        table_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        layout.addWidget(table_label)
-        
-        self.points_table = QTableWidget()
-        self.points_table.setColumnCount(6)
-        self.points_table.setHorizontalHeaderLabels(['#', 'X', 'Y', 'Z', 'RX', 'RY', 'RZ'])
-        
-        # Configuration du tableau
-        header = self.points_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.points_table.setMaximumHeight(200)
-        
-        layout.addWidget(self.points_table)
-        
-        return panel
-    
-    def load_trajectory_file(self):
-        """Charge un fichier de trajectoire"""
-        file_dialog = QFileDialog()
-        file_path, _ = file_dialog.getOpenFileName(
-            self, 
-            "Charger une Trajectoire",
-            "",
-            "Tous les formats (*.val3 *.krl *.rapid *.gcode *.txt);;VAL3 (*.val3);;KRL (*.krl);;RAPID (*.rapid);;G-Code (*.gcode);;Texte (*.txt)"
-        )
-        
-        if file_path:
-            self.process_trajectory_file(file_path)
-    
-    def load_trajectory_folder(self):
-        """Charge tous les fichiers d'un dossier"""
-        folder_dialog = QFileDialog()
-        folder_path = folder_dialog.getExistingDirectory(self, "Charger un Dossier")
-        
-        if folder_path:
-            # Recherche des fichiers supportés
-            supported_extensions = ['.val3', '.krl', '.rapid', '.gcode', '.txt']
-            
-            for file_name in os.listdir(folder_path):
-                file_path = os.path.join(folder_path, file_name)
-                if any(file_name.lower().endswith(ext) for ext in supported_extensions):
-                    self.process_trajectory_file(file_path)
-    
-    def process_trajectory_file(self, file_path):
-        """Traite un fichier de trajectoire"""
-        try:
-            # Détection du format
-            file_format = self.detect_file_format(file_path)
-            
-            # Ajout à la liste
-            file_info = {
-                'path': file_path,
-                'name': os.path.basename(file_path),
-                'format': file_format,
-                'points': 0,  # À calculer après parsing
-                'status': 'Chargé'
-            }
-            
-            self.loaded_files.append(file_info)
-            
-            # Mise à jour de la liste
-            self.file_list.addItem(f"{file_info['name']} ({file_format})")
-            
-            logger.info(f"✅ Fichier chargé: {file_info['name']}")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur chargement fichier: {e}")
-    
-    def detect_file_format(self, file_path):
-        """Détecte le format du fichier"""
-        extension = os.path.splitext(file_path)[1].lower()
-        
-        format_map = {
-            '.val3': 'VAL3',
-            '.krl': 'KRL',
-            '.rapid': 'RAPID',
-            '.gcode': 'G-Code',
-            '.txt': 'Texte'
-        }
-        
-        return format_map.get(extension, 'Inconnu')
-    
-    def on_file_selected(self):
-        """Gestion de la sélection d'un fichier"""
-        current_row = self.file_list.currentRow()
-        
-        if 0 <= current_row < len(self.loaded_files):
-            self.current_trajectory = self.loaded_files[current_row]
-            
-            # Activation des boutons
-            self.preview_btn.setEnabled(True)
-            self.remove_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
-            
-            # Mise à jour des informations
-            self.update_trajectory_info()
-        else:
-            self.preview_btn.setEnabled(False)
-            self.remove_btn.setEnabled(False)
-            self.export_btn.setEnabled(False)
-    
-    def update_trajectory_info(self):
-        """Met à jour les informations de la trajectoire"""
-        if not self.current_trajectory:
-            return
-        
-        info_text = f"""
-Fichier: {self.current_trajectory['name']}
-Format: {self.current_trajectory['format']}
-Chemin: {self.current_trajectory['path']}
-Points: {self.current_trajectory['points']} (estimation)
-Status: {self.current_trajectory['status']}
-
-Contenu (aperçu):
-[Analyse en cours...]
-        """.strip()
-        
-        self.info_text.setText(info_text)
-    
-    def preview_trajectory(self):
-        """Aperçu de la trajectoire sélectionnée"""
-        if not self.current_trajectory:
-            return
-        
-        try:
-            # Simulation du parsing et affichage
-            self.visualization_area.setText(f"Visualisation de:\n{self.current_trajectory['name']}\n\n[Implémentation à venir]")
-            
-            # Simulation de points dans le tableau
-            self.populate_points_table()
-            
-            logger.info(f"👁️ Aperçu de: {self.current_trajectory['name']}")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur aperçu: {e}")
-    
-    def populate_points_table(self):
-        """Remplit le tableau avec des points simulés"""
-        # Simulation de quelques points de trajectoire
-        sample_points = [
-            [1, 100.0, 200.0, 300.0, 0.0, 0.0, 0.0],
-            [2, 105.0, 205.0, 305.0, 0.1, 0.0, 0.0],
-            [3, 110.0, 210.0, 310.0, 0.2, 0.0, 0.0],
-            [4, 115.0, 215.0, 315.0, 0.3, 0.0, 0.0],
-            [5, 120.0, 220.0, 320.0, 0.4, 0.0, 0.0],
-        ]
-        
-        self.points_table.setRowCount(len(sample_points))
-        
-        for row, point in enumerate(sample_points):
-            for col, value in enumerate(point):
-                item = QTableWidgetItem(str(value))
-                self.points_table.setItem(row, col, item)
-    
-    def remove_trajectory(self):
-        """Supprime la trajectoire sélectionnée"""
-        current_row = self.file_list.currentRow()
-        
-        if 0 <= current_row < len(self.loaded_files):
-            removed_file = self.loaded_files.pop(current_row)
-            self.file_list.takeItem(current_row)
-            
-            # Réinitialisation si c'était le fichier courant
-            if self.current_trajectory == removed_file:
-                self.current_trajectory = None
-                self.info_text.setText("Aucune trajectoire sélectionnée")
-                self.visualization_area.setText("Visualisation 3D\n(Chargez une trajectoire)")
-                self.points_table.setRowCount(0)
-            
-            logger.info(f"🗑️ Fichier supprimé: {removed_file['name']}")
-    
-    def export_trajectory(self):
-        """Exporte la trajectoire dans le format sélectionné"""
-        if not self.current_trajectory:
-            return
-        
-        format_selected = self.export_format.currentText()
-        
-        file_dialog = QFileDialog()
-        export_path, _ = file_dialog.getSaveFileName(
-            self,
-            f"Exporter en {format_selected}",
-            f"{self.current_trajectory['name']}.{format_selected.lower()}",
-            f"{format_selected} (*.{format_selected.lower()})"
-        )
-        
-        if export_path:
-            try:
-                # TODO: Implémenter la vraie conversion
-                logger.info(f"💾 Export vers: {export_path} (format: {format_selected})")
-                
-            except Exception as e:
-                logger.error(f"❌ Erreur export: {e}")
-    
-    def open_file_dialog(self):
-        """Interface publique pour ouvrir un fichier (appelée depuis MainWindow)"""
-        self.load_trajectory_file()
-    
-    def get_status_info(self):
-        """Retourne les informations de status pour la barre principale"""
-        if self.loaded_files:
-            return f"📊 {len(self.loaded_files)} trajectoire(s) chargée(s)"
-        else:
-            return "📊 Aucune trajectoire chargée"
-    
-    def cleanup(self):
-        """Nettoyage lors de la fermeture"""
-        self.loaded_files.clear()
-        logger.info("🧹 TrajectoryTab nettoyé")
-
-
-# ============================================================================
-# Target Tab - Onglet de définition des cibles
-# ============================================================================
-
-class TargetTab(QWidget):
-    """Onglet pour la définition et sélection des cibles"""
-    
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        
-        # État du tracking
-        self.tracking_active = False
-        self.selected_targets = []
-        
-        self.setup_ui()
-        logger.info("🎯 TargetTab initialisé")
-    
-    def setup_ui(self):
-        """Configuration de l'interface"""
-        layout = QHBoxLayout(self)
-        
-        # Splitter principal
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
-        
-        # === Panneau de contrôle (gauche) ===
-        control_panel = self.create_control_panel()
-        splitter.addWidget(control_panel)
-        
-        # === Zone de sélection (droite) ===
-        selection_panel = self.create_selection_panel()
-        splitter.addWidget(selection_panel)
-        
-        splitter.setSizes([300, 700])
-    
-    def create_control_panel(self):
-        """Création du panneau de contrôle"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # === Type de cibles ===
-        target_type_group = QGroupBox("Type de Cibles")
-        target_type_layout = QVBoxLayout(target_type_group)
-        
-        self.target_type = QComboBox()
-        self.target_type.addItems([
-            "Marqueurs ArUco",
-            "Marqueurs Réfléchissants", 
-            "LEDs Colorées",
-            "Points Naturels"
-        ])
-        self.target_type.currentTextChanged.connect(self.on_target_type_changed)
-        target_type_layout.addWidget(self.target_type)
-        
-        layout.addWidget(target_type_group)
-        
-        # === Configuration ArUco ===
-        self.aruco_group = QGroupBox("Configuration ArUco")
-        aruco_layout = QVBoxLayout(self.aruco_group)
-        
-        aruco_layout.addWidget(QLabel("Dictionnaire:"))
-        self.aruco_dict = QComboBox()
-        self.aruco_dict.addItems(["DICT_4X4_50", "DICT_5X5_100", "DICT_6X6_250"])
-        self.aruco_dict.setCurrentText(
-            self.config.get('tracking', 'aruco.dictionary', 'DICT_5X5_100')
-        )
-        aruco_layout.addWidget(self.aruco_dict)
-        
-        aruco_layout.addWidget(QLabel("Taille marqueur (m):"))
-        self.marker_size = QComboBox()
-        self.marker_size.addItems(["0.01", "0.02", "0.05", "0.10"])
-        self.marker_size.setCurrentText("0.05")
-        aruco_layout.addWidget(self.marker_size)
-        
-        layout.addWidget(self.aruco_group)
-        
-        # === Contrôles de tracking ===
-        tracking_group = QGroupBox("Contrôles de Tracking")
-        tracking_layout = QVBoxLayout(tracking_group)
-        
-        self.start_tracking_btn = QPushButton("▶️ Démarrer Tracking")
-        self.start_tracking_btn.clicked.connect(self.start_tracking)
-        tracking_layout.addWidget(self.start_tracking_btn)
-        
-        self.stop_tracking_btn = QPushButton("⏹️ Arrêter Tracking")
-        self.stop_tracking_btn.clicked.connect(self.stop_tracking)
-        self.stop_tracking_btn.setEnabled(False)
-        tracking_layout.addWidget(self.stop_tracking_btn)
-        
-        layout.addWidget(tracking_group)
-        
-        # === Cibles détectées ===
-        detected_group = QGroupBox("Cibles Détectées")
-        detected_layout = QVBoxLayout(detected_group)
-        
-        self.targets_list = QListWidget()
-        detected_layout.addWidget(self.targets_list)
-        
-        layout.addWidget(detected_group)
-        
-        layout.addStretch()
-        return panel
-    
-    def create_selection_panel(self):
-        """Création du panneau de sélection"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # Titre
-        title_label = QLabel("Sélection des Cibles")
-        title_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
-        
-        # Zone de sélection interactive
-        self.selection_area = QLabel()
-        self.selection_area.setMinimumSize(650, 500)
-        self.selection_area.setStyleSheet("""
-            border: 2px solid #555;
-            background-color: #1a1a1a;
-            border-radius: 5px;
-        """)
-        self.selection_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.selection_area.setText("Zone de Sélection Interactive\n(Démarrez la caméra pour sélectionner des cibles)")
-        
-        layout.addWidget(self.selection_area)
-        
-        return panel
-    
-    def on_target_type_changed(self, target_type):
-        """Gestion du changement de type de cible"""
-        # Affichage conditionnel des groupes de configuration
-        self.aruco_group.setVisible(target_type == "Marqueurs ArUco")
-    
-    def start_tracking(self):
-        """Démarre le tracking des cibles"""
-        try:
-            self.tracking_active = True
-            
-            # Mise à jour de l'interface
-            self.start_tracking_btn.setEnabled(False)
-            self.stop_tracking_btn.setEnabled(True)
-            
-            # Simulation de détection de cibles
-            self.simulate_target_detection()
-            
-            logger.info("🎯 Tracking des cibles démarré")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur démarrage tracking: {e}")
-    
-    def stop_tracking(self):
-        """Arrête le tracking des cibles"""
-        try:
-            self.tracking_active = False
-            
-            # Mise à jour de l'interface
-            self.start_tracking_btn.setEnabled(True)
-            self.stop_tracking_btn.setEnabled(False)
-            
-            # Nettoyage
-            self.targets_list.clear()
-            self.selected_targets.clear()
-            
-            logger.info("⏹️ Tracking des cibles arrêté")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur arrêt tracking: {e}")
-    
-    def simulate_target_detection(self):
-        """Simulation de détection de cibles"""
-        # Simulation de cibles détectées
-        simulated_targets = [
-            "ArUco ID: 1 (x: 120, y: 80)",
-            "ArUco ID: 2 (x: 340, y: 150)", 
-            "ArUco ID: 5 (x: 560, y: 200)"
-        ]
-        
-        self.targets_list.clear()
-        for target in simulated_targets:
-            self.targets_list.addItem(target)
-        
-        self.selection_area.setText("🎯 Cibles détectées\n(Cliquez pour sélectionner)")
-    
-    def get_status_info(self):
-        """Retourne les informations de status"""
-        if self.tracking_active:
-            return f"🎯 Tracking actif - {len(self.selected_targets)} cible(s) sélectionnée(s)"
-        else:
-            return "🎯 Tracking inactif"
-    
-    def cleanup(self):
-        """Nettoyage lors de la fermeture"""
-        self.stop_tracking()
-        logger.info("🧹 TargetTab nettoyé")
-
-
-# ============================================================================
-# Calibration Tab - Onglet de calibration caméra-robot
-# ============================================================================
-
-class CalibrationTab(QWidget):
-    """Onglet pour la calibration caméra-robot"""
-    
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        
-        self.calibration_active = False
-        self.calibration_poses = []
-        
-        self.setup_ui()
-        logger.info("⚙️ CalibrationTab initialisé")
-    
-    def setup_ui(self):
-        """Configuration de l'interface"""
-        layout = QVBoxLayout(self)
-        
-        # Titre principal
-        title_label = QLabel("Calibration Caméra-Robot")
-        title_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
-        
-        # Splitter principal
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
-        
-        # === Panneau de contrôle (gauche) ===
-        control_panel = self.create_control_panel()
-        splitter.addWidget(control_panel)
-        
-        # === Zone de visualisation (droite) ===
-        visualization_panel = self.create_visualization_panel()
-        splitter.addWidget(visualization_panel)
-        
-        splitter.setSizes([400, 600])
-    
-    def create_control_panel(self):
-        """Création du panneau de contrôle"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # === Wizard de calibration ===
-        wizard_group = QGroupBox("Assistant de Calibration")
-        wizard_layout = QVBoxLayout(wizard_group)
-        
-        self.start_wizard_btn = QPushButton("🚀 Démarrer l'Assistant")
-        self.start_wizard_btn.clicked.connect(self.start_calibration_wizard)
-        wizard_layout.addWidget(self.start_wizard_btn)
-        
-        # Étapes du wizard
-        steps_text = """
-Étapes de calibration:
-1. Configuration du pattern échiquier
-2. Capture des poses caméra
-3. Enregistrement des poses robot  
-4. Calcul de la transformation
-5. Validation des résultats
-        """.strip()
-        
-        steps_label = QLabel(steps_text)
-        steps_label.setStyleSheet("color: #888; font-size: 10px;")
-        wizard_layout.addWidget(steps_label)
-        
-        layout.addWidget(wizard_group)
-        
-        # === Configuration du pattern ===
-        pattern_group = QGroupBox("Configuration Pattern")
-        pattern_layout = QVBoxLayout(pattern_group)
-        
-        pattern_layout.addWidget(QLabel("Type de pattern:"))
-        self.pattern_type = QComboBox()
-        self.pattern_type.addItems(["Échiquier", "Cercles", "ArUco Board"])
-        pattern_layout.addWidget(self.pattern_type)
-        
-        pattern_layout.addWidget(QLabel("Dimensions (cases):"))
-        pattern_dims = QHBoxLayout()
-        self.pattern_width = QComboBox()
-        self.pattern_width.addItems(["6", "7", "8", "9", "10"])
-        self.pattern_width.setCurrentText("9")
-        pattern_dims.addWidget(self.pattern_width)
-        
-        pattern_dims.addWidget(QLabel("×"))
-        
-        self.pattern_height = QComboBox()
-        self.pattern_height.addItems(["4", "5", "6", "7", "8"])
-        self.pattern_height.setCurrentText("6")
-        pattern_dims.addWidget(self.pattern_height)
-        
-        pattern_layout.addLayout(pattern_dims)
-        
-        pattern_layout.addWidget(QLabel("Taille case (mm):"))
-        self.square_size = QComboBox()
-        self.square_size.addItems(["10", "15", "20", "25", "30"])
-        self.square_size.setCurrentText("20")
-        pattern_layout.addWidget(self.square_size)
-        
-        layout.addWidget(pattern_group)
-        
-        # === Poses capturées ===
-        poses_group = QGroupBox("Poses Capturées")
-        poses_layout = QVBoxLayout(poses_group)
-        
-        self.poses_list = QListWidget()
-        poses_layout.addWidget(self.poses_list)
-        
-        # Boutons de capture
-        capture_buttons = QHBoxLayout()
-        
-        self.capture_pose_btn = QPushButton("📸 Capturer Pose")
-        self.capture_pose_btn.clicked.connect(self.capture_pose)
-        self.capture_pose_btn.setEnabled(False)
-        capture_buttons.addWidget(self.capture_pose_btn)
-        
-        self.clear_poses_btn = QPushButton("🗑️ Effacer")
-        self.clear_poses_btn.clicked.connect(self.clear_poses)
-        capture_buttons.addWidget(self.clear_poses_btn)
-        
-        poses_layout.addLayout(capture_buttons)
-        layout.addWidget(poses_group)
-        
-        # === Calcul de calibration ===
-        calc_group = QGroupBox("Calcul de Calibration")
-        calc_layout = QVBoxLayout(calc_group)
-        
-        self.calculate_btn = QPushButton("🧮 Calculer Calibration")
-        self.calculate_btn.clicked.connect(self.calculate_calibration)
-        self.calculate_btn.setEnabled(False)
-        calc_layout.addWidget(self.calculate_btn)
-        
-        self.save_calibration_btn = QPushButton("💾 Sauvegarder Résultats")
-        self.save_calibration_btn.clicked.connect(self.save_calibration)
-        self.save_calibration_btn.setEnabled(False)
-        calc_layout.addWidget(self.save_calibration_btn)
-        
-        layout.addWidget(calc_group)
-        
-        layout.addStretch()
-        return panel
-    
-    def create_visualization_panel(self):
-        """Création du panneau de visualisation"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # Zone de visualisation de la calibration
-        self.calibration_view = QLabel()
-        self.calibration_view.setMinimumSize(580, 400)
-        self.calibration_view.setStyleSheet("""
-            border: 2px solid #555;
-            background-color: #1a1a1a;
-            border-radius: 5px;
-        """)
-        self.calibration_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.calibration_view.setText("Visualisation de Calibration\n(Démarrez l'assistant)")
-        
-        layout.addWidget(self.calibration_view)
-        
-        # === Résultats de calibration ===
-        results_group = QGroupBox("Résultats de Calibration")
-        results_layout = QVBoxLayout(results_group)
-        
-        self.results_text = QTextEdit()
-        self.results_text.setMaximumHeight(150)
-        self.results_text.setFont(QFont("Courier", 9))
-        self.results_text.setText("Aucun résultat de calibration disponible")
-        results_layout.addWidget(self.results_text)
-        
-        layout.addWidget(results_group)
-        
-        return panel
-    
-    def start_calibration_wizard(self):
-        """Démarre l'assistant de calibration"""
-        try:
-            self.calibration_active = True
-            
-            # Activation des contrôles
-            self.capture_pose_btn.setEnabled(True)
-            self.start_wizard_btn.setEnabled(False)
-            
-            # Mise à jour de la visualisation
-            self.calibration_view.setText("🎯 Calibration en cours\nPositionnez le pattern et capturez des poses")
-            
-            logger.info("🚀 Assistant de calibration démarré")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur démarrage calibration: {e}")
-    
-    def capture_pose(self):
-        """Capture une nouvelle pose pour la calibration"""
-        try:
-            pose_count = len(self.calibration_poses) + 1
-            
-            # Simulation d'une pose capturée
-            pose_info = {
-                'id': pose_count,
-                'robot_pose': [100 + pose_count * 10, 200, 300, 0, 0, 0],
-                'pattern_detected': True,
-                'reprojection_error': 0.5 + pose_count * 0.1
-            }
-            
-            self.calibration_poses.append(pose_info)
-            
-            # Mise à jour de la liste
-            self.poses_list.addItem(f"Pose {pose_count}: Erreur reprojection = {pose_info['reprojection_error']:.2f}px")
-            
-            # Activation du calcul si assez de poses
-            if len(self.calibration_poses) >= 10:
-                self.calculate_btn.setEnabled(True)
-            
-            logger.info(f"📸 Pose {pose_count} capturée")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur capture pose: {e}")
-    
-    def clear_poses(self):
-        """Efface toutes les poses capturées"""
-        self.calibration_poses.clear()
-        self.poses_list.clear()
-        self.calculate_btn.setEnabled(False)
-        self.save_calibration_btn.setEnabled(False)
-        
-        logger.info("🗑️ Poses effacées")
-    
-    def calculate_calibration(self):
-        """Calcule la calibration caméra-robot"""
-        try:
-            # Simulation du calcul de calibration
-            results = {
-                'translation': [45.2, -12.8, 156.3],
-                'rotation': [0.1, -0.05, 1.57],
-                'reprojection_error': 0.85,
-                'poses_used': len(self.calibration_poses)
-            }
-            
-            # Affichage des résultats
-            results_text = f"""
-Calibration Hand-Eye calculée:
-
-Translation (mm):
-  X: {results['translation'][0]:.2f}
-  Y: {results['translation'][1]:.2f}
-  Z: {results['translation'][2]:.2f}
-
-Rotation (rad):
-  RX: {results['rotation'][0]:.3f}
-  RY: {results['rotation'][1]:.3f}
-  RZ: {results['rotation'][2]:.3f}
-
-Erreur de reprojection: {results['reprojection_error']:.2f} px
-Poses utilisées: {results['poses_used']}
-
-Status: ✅ Calibration réussie
-            """.strip()
-            
-            self.results_text.setText(results_text)
-            self.save_calibration_btn.setEnabled(True)
-            
-            logger.info("🧮 Calibration calculée avec succès")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur calcul calibration: {e}")
-    
-    def save_calibration(self):
-        """Sauvegarde les résultats de calibration"""
-        try:
-            # TODO: Sauvegarder dans la configuration
-            logger.info("💾 Résultats de calibration sauvegardés")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur sauvegarde calibration: {e}")
-    
-    def get_status_info(self):
-        """Retourne les informations de status"""
-        if self.calibration_active:
-            return f"⚙️ Calibration en cours - {len(self.calibration_poses)} pose(s) capturée(s)"
-        else:
-            return "⚙️ Calibration inactive"
-    
-    def cleanup(self):
-        """Nettoyage lors de la fermeture"""
-        self.calibration_active = False
-        logger.info("🧹 CalibrationTab nettoyé")
-
-
-# ============================================================================
-# Measures Tab - Onglet de mesures et rapports  
-# ============================================================================
-
-class MeasuresTab(QWidget):
-    """Onglet pour les mesures et génération de rapports"""
-    
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        
-        self.measurement_data = []
-        self.report_active = False
-        
-        self.setup_ui()
-        logger.info("📊 MeasuresTab initialisé")
-    
-    def setup_ui(self):
-        """Configuration de l'interface"""
-        layout = QVBoxLayout(self)
-        
-        # Titre principal
-        title_label = QLabel("Mesures et Rapports")
-        title_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
-        
-        # Splitter principal
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
-        
-        # === Panneau de contrôle (gauche) ===
-        control_panel = self.create_control_panel()
-        splitter.addWidget(control_panel)
-        
-        # === Zone de visualisation (droite) ===
-        metrics_panel = self.create_metrics_panel()
-        splitter.addWidget(metrics_panel)
-        
-        splitter.setSizes([350, 650])
-    
-    def create_control_panel(self):
-        """Création du panneau de contrôle"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # === Acquisition de mesures ===
-        acquisition_group = QGroupBox("Acquisition de Mesures")
-        acquisition_layout = QVBoxLayout(acquisition_group)
-        
-        self.start_measurement_btn = QPushButton("📊 Démarrer Mesures")
-        self.start_measurement_btn.clicked.connect(self.start_measurements)
-        acquisition_layout.addWidget(self.start_measurement_btn)
-        
-        self.stop_measurement_btn = QPushButton("⏹️ Arrêter Mesures")
-        self.stop_measurement_btn.clicked.connect(self.stop_measurements)
-        self.stop_measurement_btn.setEnabled(False)
-        acquisition_layout.addWidget(self.stop_measurement_btn)
-        
-        layout.addWidget(acquisition_group)
-        
-        # === Métriques temps réel ===
-        realtime_group = QGroupBox("Métriques Temps Réel")
-        realtime_layout = QVBoxLayout(realtime_group)
-        
-        self.position_label = QLabel("Position 3D: --")
-        realtime_layout.addWidget(self.position_label)
-        
-        self.deviation_label = QLabel("Écart trajectoire: --")
-        realtime_layout.addWidget(self.deviation_label)
-        
-        self.precision_label = QLabel("Précision: --")
-        realtime_layout.addWidget(self.precision_label)
-        
-        layout.addWidget(realtime_group)
-        
-        # === Génération de rapports ===
-        report_group = QGroupBox("Génération de Rapports")
-        report_layout = QVBoxLayout(report_group)
-        
-        self.generate_pdf_btn = QPushButton("📄 Générer Rapport PDF")
-        self.generate_pdf_btn.clicked.connect(self.generate_pdf_report)
-        report_layout.addWidget(self.generate_pdf_btn)
-        
-        self.export_csv_btn = QPushButton("📊 Exporter Données CSV")
-        self.export_csv_btn.clicked.connect(self.export_csv_data)
-        report_layout.addWidget(self.export_csv_btn)
-        
-        layout.addWidget(report_group)
-        
-        layout.addStretch()
-        return panel
-    
-    def create_metrics_panel(self):
-        """Création du panneau de métriques"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # Zone de graphiques
-        self.metrics_view = QLabel()
-        self.metrics_view.setMinimumSize(620, 400)
-        self.metrics_view.setStyleSheet("""
-            border: 2px solid #555;
-            background-color: #1a1a1a;
-            border-radius: 5px;
-        """)
-        self.metrics_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.metrics_view.setText("Graphiques de Mesures\n(Démarrez l'acquisition)")
-        
-        layout.addWidget(self.metrics_view)
-        
-        # === Statistiques ===
-        stats_group = QGroupBox("Statistiques")
-        stats_layout = QVBoxLayout(stats_group)
-        
-        self.stats_text = QTextEdit()
-        self.stats_text.setMaximumHeight(150)
-        self.stats_text.setFont(QFont("Courier", 9))
-        self.stats_text.setText("Aucune donnée de mesure disponible")
-        stats_layout.addWidget(self.stats_text)
-        
-        layout.addWidget(stats_group)
-        
-        return panel
-    
-    def start_measurements(self):
-        """Démarre l'acquisition de mesures"""
-        try:
-            self.report_active = True
-            
-            # Mise à jour de l'interface
-            self.start_measurement_btn.setEnabled(False)
-            self.stop_measurement_btn.setEnabled(True)
-            
-            # Simulation de mesures
-            self.simulate_measurements()
-            
-            logger.info("📊 Acquisition de mesures démarrée")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur démarrage mesures: {e}")
-    
-    def stop_measurements(self):
-        """Arrête l'acquisition de mesures"""
-        try:
-            self.report_active = False
-            
-            # Mise à jour de l'interface
-            self.start_measurement_btn.setEnabled(True)
-            self.stop_measurement_btn.setEnabled(False)
-            
-            logger.info("⏹️ Acquisition de mesures arrêtée")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur arrêt mesures: {e}")
-    
-    def simulate_measurements(self):
-        """Simulation de données de mesures"""
-        # Simulation de métriques temps réel
-        self.position_label.setText("Position 3D: X=123.45, Y=234.56, Z=345.67 mm")
-        self.deviation_label.setText("Écart trajectoire: 0.85 mm")
-        self.precision_label.setText("Précision: ±0.12 mm")
-        
-        # Simulation de statistiques
-        stats_text = """
-Statistiques de Mesure:
-
-Précision de pose (AP): 0.8 mm
-Répétabilité (RP): 0.15 mm
-Écart-type: 0.22 mm
-Erreur maximum: 1.2 mm
-Points mesurés: 156
-Durée acquisition: 2.5 min
-
-Conformité ISO 9283:
-✅ Précision < 0.5 mm: NON (0.8 mm)
-✅ Répétabilité < 0.1 mm: NON (0.15 mm)
-        """.strip()
-        
-        self.stats_text.setText(stats_text)
-        self.metrics_view.setText("📊 Mesures en cours\n(Graphiques temps réel)")
-    
-    def generate_pdf_report(self):
-        """Génère un rapport PDF"""
-        try:
-            file_dialog = QFileDialog()
-            pdf_path, _ = file_dialog.getSaveFileName(
-                self,
-                "Sauvegarder Rapport PDF",
-                "rapport_trajectoire.pdf",
-                "PDF (*.pdf)"
-            )
-            
-            if pdf_path:
-                # TODO: Implémenter la vraie génération PDF avec ReportLab
-                logger.info(f"📄 Rapport PDF généré: {pdf_path}")
-                
-        except Exception as e:
-            logger.error(f"❌ Erreur génération PDF: {e}")
-    
-    def export_csv_data(self):
-        """Exporte les données en CSV"""
-        try:
-            file_dialog = QFileDialog()
-            csv_path, _ = file_dialog.getSaveFileName(
-                self,
-                "Exporter Données CSV",
-                "donnees_mesures.csv",
-                "CSV (*.csv)"
-            )
-            
-            if csv_path:
-                # TODO: Implémenter l'export CSV réel
-                logger.info(f"📊 Données exportées: {csv_path}")
-                
-        except Exception as e:
-            logger.error(f"❌ Erreur export CSV: {e}")
-    
-    def save_report_dialog(self):
-        """Interface publique pour sauvegarder (appelée depuis MainWindow)"""
-        self.generate_pdf_report()
-    
-    def get_status_info(self):
-        """Retourne les informations de status"""
-        if self.report_active:
-            return f"📊 Mesures actives - {len(self.measurement_data)} point(s) acquis"
-        else:
-            return "📊 Mesures inactives"
-    
-    def cleanup(self):
-        """Nettoyage lors de la fermeture"""
-        self.stop_measurements()
-        logger.info("🧹 MeasuresTab nettoyé")#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
 robot_tracker/ui/camera_tab.py
-Onglet de gestion des caméras - Version 1.0
-Modification: Interface de base fonctionnelle avec preview et contrôles
+Onglet de gestion des caméras avec streaming temps réel - Version 3.0
+Modification: Intégration complète CameraManager avec visualisation multi-caméras
 """
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                           QLabel, QComboBox, QSpinBox, QCheckBox, QGroupBox,
-                           QGridLayout, QTextEdit, QProgressBar, QFrame, QSplitter)
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
-from PyQt6.QtGui import QPixmap, QFont
+import cv2
 import numpy as np
+import time
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QPushButton, QLabel, QComboBox, QSpinBox, QCheckBox,
+    QGroupBox, QFrame, QSplitter, QTextEdit, QProgressBar,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QFileDialog, QSlider
+)
+from PyQt6.QtCore import QTimer, pyqtSignal, QThread, Qt, QSize
+from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon
+
 import logging
 
+try:
+    from ..core.camera_manager import CameraManager, CameraType, CameraInfo
+except ImportError:
+    from core.camera_manager import CameraManager, CameraType, CameraInfo
+
 logger = logging.getLogger(__name__)
+
+class CameraDisplayWidget(QLabel):
+    """Widget d'affichage d'une caméra avec overlay d'informations"""
+    
+    clicked = pyqtSignal(str)  # Signal émis lors du clic avec l'alias de la caméra
+    
+    def __init__(self, alias: str, parent=None):
+        super().__init__(parent)
+        self.alias = alias
+        self.current_frame = None
+        self.show_depth = False
+        self.zoom_factor = 1.0
+        
+        # Configuration de l'affichage
+        self.setMinimumSize(320, 240)
+        self.setMaximumSize(800, 600)
+        self.setScaledContents(True)
+        self.setFrameStyle(QFrame.Shape.Box)
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px solid #ccc;
+                border-radius: 5px;
+                background-color: #f0f0f0;
+            }
+            QLabel:hover {
+                border-color: #007acc;
+            }
+        """)
+        
+        # Texte par défaut
+        self.setText(f"Caméra: {alias}\nEn attente...")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Font pour le texte
+        font = QFont()
+        font.setPointSize(10)
+        self.setFont(font)
+    
+    def update_frame(self, color_frame: np.ndarray, depth_frame: np.ndarray = None):
+        """Met à jour l'affichage avec une nouvelle frame"""
+        try:
+            if color_frame is None:
+                return
+            
+            # Sélection de l'image à afficher
+            if self.show_depth and depth_frame is not None:
+                # Normalisation de la profondeur pour affichage
+                depth_normalized = cv2.normalize(depth_frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                frame_to_display = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
+            else:
+                frame_to_display = color_frame.copy()
+            
+            # Application du zoom
+            if self.zoom_factor != 1.0:
+                h, w = frame_to_display.shape[:2]
+                new_w, new_h = int(w * self.zoom_factor), int(h * self.zoom_factor)
+                frame_to_display = cv2.resize(frame_to_display, (new_w, new_h))
+            
+            # Overlay d'informations
+            self._add_overlay(frame_to_display)
+            
+            # Conversion pour Qt
+            self.current_frame = frame_to_display
+            self._update_qt_display(frame_to_display)
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur mise à jour affichage {self.alias}: {e}")
+    
+    def _add_overlay(self, frame: np.ndarray):
+        """Ajoute les informations en overlay sur l'image"""
+        # Informations en haut à gauche
+        overlay_text = [
+            f"Camera: {self.alias}",
+            f"Size: {frame.shape[1]}x{frame.shape[0]}",
+            f"Mode: {'Depth' if self.show_depth else 'Color'}",
+            f"Zoom: {self.zoom_factor:.1f}x"
+        ]
+        
+        y_offset = 25
+        for text in overlay_text:
+            cv2.putText(frame, text, (10, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            y_offset += 25
+        
+        # Crosshair au centre
+        h, w = frame.shape[:2]
+        cv2.line(frame, (w//2 - 20, h//2), (w//2 + 20, h//2), (0, 255, 0), 2)
+        cv2.line(frame, (w//2, h//2 - 20), (w//2, h//2 + 20), (0, 255, 0), 2)
+    
+    def _update_qt_display(self, frame: np.ndarray):
+        """Met à jour l'affichage Qt avec la frame"""
+        try:
+            height, width, channel = frame.shape
+            bytes_per_line = 3 * width
+            
+            q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).rgbSwapped()
+            pixmap = QPixmap.fromImage(q_image)
+            
+            self.setPixmap(pixmap)
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur conversion Qt: {e}")
+    
+    def mousePressEvent(self, event):
+        """Gestion du clic sur l'affichage"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.alias)
+    
+    def toggle_depth_view(self):
+        """Bascule entre vue couleur et profondeur"""
+        self.show_depth = not self.show_depth
+    
+    def set_zoom(self, zoom: float):
+        """Définit le facteur de zoom"""
+        self.zoom_factor = max(0.1, min(5.0, zoom))
 
 class CameraTab(QWidget):
-    """Onglet pour la configuration et contrôle des caméras"""
+    """Onglet de gestion des caméras avec streaming temps réel"""
     
-    def __init__(self, config):
-        super().__init__()
+    # Signaux
+    camera_selected = pyqtSignal(str)  # Caméra sélectionnée
+    frame_captured = pyqtSignal(str, object)  # Frame capturée
+    
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
         self.config = config
         
-        # État des caméras
-        self.realsense_connected = False
-        self.usb3_connected = False
-        self.camera_thread = None
+        # Gestionnaire de caméras
+        self.camera_manager = CameraManager(self.config)
         
-        # Timer pour les mises à jour
+        # État de l'interface
+        self.available_cameras = []
+        self.active_displays = {}  # alias -> CameraDisplayWidget
+        self.is_streaming = False
+        self.selected_camera = None
+        
+        # Timer pour mise à jour périodique
         self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_status)
+        self.update_timer.timeout.connect(self._update_camera_frames)
         
-        self.setup_ui()
-        self.setup_connections()
-        self.detect_cameras()
+        # Timer pour rafraîchissement des statistiques
+        self.stats_timer = QTimer()
+        self.stats_timer.timeout.connect(self._update_statistics)
         
-        logger.info("📷 CameraTab initialisé")
+        # Initialisation de l'interface
+        self._init_ui()
+        self._connect_signals()
+        
+        # Détection initiale des caméras
+        self._detect_cameras()
+        
+        logger.info("🎥 CameraTab initialisé")
     
-    def setup_ui(self):
-        """Configuration de l'interface"""
+    def _init_ui(self):
+        """Initialise l'interface utilisateur"""
         layout = QHBoxLayout(self)
         
-        # Splitter principal
+        # Création du splitter principal
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
         
-        # === Panneau de contrôle (gauche) ===
-        control_panel = self.create_control_panel()
+        # Panel de contrôle (gauche)
+        control_panel = self._create_control_panel()
         splitter.addWidget(control_panel)
         
-        # === Zone de prévisualisation (droite) ===
-        preview_panel = self.create_preview_panel()
-        splitter.addWidget(preview_panel)
+        # Zone d'affichage des caméras (droite)
+        display_area = self._create_display_area()
+        splitter.addWidget(display_area)
         
-        # Proportions : 30% contrôles, 70% preview
+        # Proportions du splitter
         splitter.setSizes([300, 700])
     
-    def create_control_panel(self):
-        """Création du panneau de contrôle"""
+    def _create_control_panel(self) -> QWidget:
+        """Crée le panel de contrôle des caméras"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
-        # === Détection des caméras ===
-        detection_group = QGroupBox("Détection des Caméras")
+        # === Détection et sélection ===
+        detection_group = QGroupBox("🔍 Détection & Sélection")
         detection_layout = QVBoxLayout(detection_group)
         
-        self.detect_btn = QPushButton("🔍 Détecter les Caméras")
-        self.detect_btn.clicked.connect(self.detect_cameras)
+        # Bouton détection
+        self.detect_btn = QPushButton("🔄 Détecter caméras")
+        self.detect_btn.setMinimumHeight(35)
         detection_layout.addWidget(self.detect_btn)
         
-        # Status des caméras
-        self.realsense_status = QLabel("RealSense D435: ❌ Non détectée")
-        self.usb3_status = QLabel("Caméra USB3: ❌ Non détectée")
-        detection_layout.addWidget(self.realsense_status)
-        detection_layout.addWidget(self.usb3_status)
+        # Liste des caméras disponibles
+        self.camera_combo = QComboBox()
+        self.camera_combo.setMinimumHeight(30)
+        detection_layout.addWidget(QLabel("Caméras disponibles:"))
+        detection_layout.addWidget(self.camera_combo)
+        
+        # Boutons d'action
+        btn_layout = QHBoxLayout()
+        self.open_btn = QPushButton("📷 Ouvrir")
+        self.close_btn = QPushButton("❌ Fermer")
+        self.open_btn.setEnabled(False)
+        self.close_btn.setEnabled(False)
+        btn_layout.addWidget(self.open_btn)
+        btn_layout.addWidget(self.close_btn)
+        detection_layout.addLayout(btn_layout)
         
         layout.addWidget(detection_group)
         
-        # === Configuration RealSense ===
-        realsense_group = QGroupBox("Intel RealSense D435")
-        realsense_layout = QGridLayout(realsense_group)
+        # === Streaming ===
+        streaming_group = QGroupBox("🎬 Streaming")
+        streaming_layout = QVBoxLayout(streaming_group)
         
-        # Activation
-        self.realsense_enabled = QCheckBox("Activée")
-        self.realsense_enabled.setChecked(
-            self.config.get('camera', 'realsense.enabled', True)
-        )
-        realsense_layout.addWidget(self.realsense_enabled, 0, 0, 1, 2)
+        # Contrôles de streaming
+        stream_btn_layout = QHBoxLayout()
+        self.start_stream_btn = QPushButton("▶️ Démarrer")
+        self.stop_stream_btn = QPushButton("⏹️ Arrêter")
+        self.start_stream_btn.setEnabled(False)
+        self.stop_stream_btn.setEnabled(False)
+        stream_btn_layout.addWidget(self.start_stream_btn)
+        stream_btn_layout.addWidget(self.stop_stream_btn)
+        streaming_layout.addLayout(stream_btn_layout)
         
-        # Résolution couleur
-        realsense_layout.addWidget(QLabel("Résolution:"), 1, 0)
-        self.realsense_resolution = QComboBox()
-        self.realsense_resolution.addItems(["640x480", "1280x720", "1920x1080"])
-        self.realsense_resolution.setCurrentText("1280x720")
-        realsense_layout.addWidget(self.realsense_resolution, 1, 1)
+        # FPS et refresh rate
+        fps_layout = QHBoxLayout()
+        fps_layout.addWidget(QLabel("Refresh UI (ms):"))
+        self.refresh_spinbox = QSpinBox()
+        self.refresh_spinbox.setRange(16, 1000)  # 16ms = ~60 FPS max
+        self.refresh_spinbox.setValue(50)  # 20 FPS par défaut
+        self.refresh_spinbox.setSuffix(" ms")
+        fps_layout.addWidget(self.refresh_spinbox)
+        streaming_layout.addLayout(fps_layout)
         
-        # FPS
-        realsense_layout.addWidget(QLabel("FPS:"), 2, 0)
-        self.realsense_fps = QSpinBox()
-        self.realsense_fps.setRange(15, 90)
-        self.realsense_fps.setValue(
-            self.config.get('camera', 'realsense.color_stream.fps', 30)
-        )
-        realsense_layout.addWidget(self.realsense_fps, 2, 1)
+        layout.addWidget(streaming_group)
         
-        # Auto-exposition
-        self.realsense_auto_exposure = QCheckBox("Auto-exposition")
-        self.realsense_auto_exposure.setChecked(
-            self.config.get('camera', 'realsense.auto_exposure', True)
-        )
-        realsense_layout.addWidget(self.realsense_auto_exposure, 3, 0, 1, 2)
+        # === Affichage ===
+        display_group = QGroupBox("🖼️ Affichage")
+        display_layout = QVBoxLayout(display_group)
         
-        layout.addWidget(realsense_group)
+        # Zoom
+        zoom_layout = QHBoxLayout()
+        zoom_layout.addWidget(QLabel("Zoom:"))
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(10, 500)  # 0.1x à 5.0x
+        self.zoom_slider.setValue(100)  # 1.0x
+        self.zoom_label = QLabel("1.0x")
+        zoom_layout.addWidget(self.zoom_slider)
+        zoom_layout.addWidget(self.zoom_label)
+        display_layout.addLayout(zoom_layout)
         
-        # === Configuration USB3 ===
-        usb3_group = QGroupBox("Caméra USB3 CMOS")
-        usb3_layout = QGridLayout(usb3_group)
+        # Options d'affichage
+        self.show_depth_cb = QCheckBox("Afficher profondeur (si disponible)")
+        self.show_stats_cb = QCheckBox("Afficher statistiques")
+        self.show_stats_cb.setChecked(True)
+        display_layout.addWidget(self.show_depth_cb)
+        display_layout.addWidget(self.show_stats_cb)
         
-        # Activation
-        self.usb3_enabled = QCheckBox("Activée")
-        self.usb3_enabled.setChecked(
-            self.config.get('camera', 'usb3_camera.enabled', True)
-        )
-        usb3_layout.addWidget(self.usb3_enabled, 0, 0, 1, 2)
+        layout.addWidget(display_group)
         
-        # ID de device
-        usb3_layout.addWidget(QLabel("Device ID:"), 1, 0)
-        self.usb3_device_id = QSpinBox()
-        self.usb3_device_id.setRange(0, 10)
-        self.usb3_device_id.setValue(
-            self.config.get('camera', 'usb3_camera.device_id', 0)
-        )
-        usb3_layout.addWidget(self.usb3_device_id, 1, 1)
+        # === Capture ===
+        capture_group = QGroupBox("📸 Capture")
+        capture_layout = QVBoxLayout(capture_group)
         
-        # Résolution
-        usb3_layout.addWidget(QLabel("Résolution:"), 2, 0)
-        self.usb3_resolution = QComboBox()
-        self.usb3_resolution.addItems(["1024x768", "1280x1024", "2048x1536", "2448x2048"])
-        self.usb3_resolution.setCurrentText("2448x2048")
-        usb3_layout.addWidget(self.usb3_resolution, 2, 1)
+        self.capture_btn = QPushButton("📸 Capturer frame")
+        self.save_btn = QPushButton("💾 Sauvegarder image")
+        self.capture_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        capture_layout.addWidget(self.capture_btn)
+        capture_layout.addWidget(self.save_btn)
         
-        # FPS
-        usb3_layout.addWidget(QLabel("FPS:"), 3, 0)
-        self.usb3_fps = QSpinBox()
-        self.usb3_fps.setRange(5, 70)
-        self.usb3_fps.setValue(
-            self.config.get('camera', 'usb3_camera.fps', 20)
-        )
-        usb3_layout.addWidget(self.usb3_fps, 3, 1)
+        layout.addWidget(capture_group)
         
-        layout.addWidget(usb3_group)
+        # === Statistiques ===
+        stats_group = QGroupBox("📊 Statistiques")
+        stats_layout = QVBoxLayout(stats_group)
         
-        # === Contrôles d'acquisition ===
-        acquisition_group = QGroupBox("Acquisition")
-        acquisition_layout = QVBoxLayout(acquisition_group)
+        # Tableau des statistiques
+        self.stats_table = QTableWidget()
+        self.stats_table.setColumnCount(3)
+        self.stats_table.setHorizontalHeaderLabels(["Propriété", "Valeur", "Unité"])
+        self.stats_table.horizontalHeader().setStretchLastSection(True)
+        self.stats_table.setMaximumHeight(200)
+        stats_layout.addWidget(self.stats_table)
         
-        self.start_preview_btn = QPushButton("▶️ Démarrer Prévisualisation")
-        self.start_preview_btn.clicked.connect(self.start_preview)
-        acquisition_layout.addWidget(self.start_preview_btn)
+        layout.addWidget(stats_group)
         
-        self.stop_preview_btn = QPushButton("⏹️ Arrêter Prévisualisation")
-        self.stop_preview_btn.clicked.connect(self.stop_preview)
-        self.stop_preview_btn.setEnabled(False)
-        acquisition_layout.addWidget(self.stop_preview_btn)
-        
-        # Sauvegarde d'images
-        self.save_images = QCheckBox("Sauvegarder les images")
-        self.save_images.setChecked(
-            self.config.get('camera', 'general.save_images', False)
-        )
-        acquisition_layout.addWidget(self.save_images)
-        
-        layout.addWidget(acquisition_group)
-        
-        # === Tests et performances ===
-        test_group = QGroupBox("Tests et Performances")
-        test_layout = QVBoxLayout(test_group)
-        
-        self.test_latency_btn = QPushButton("📊 Test de Latence")
-        self.test_latency_btn.clicked.connect(self.test_latency)
-        test_layout.addWidget(self.test_latency_btn)
-        
-        self.performance_label = QLabel("Latence: -- ms | FPS: --")
-        test_layout.addWidget(self.performance_label)
-        
-        # Barre de progression pour les tests
-        self.test_progress = QProgressBar()
-        self.test_progress.setVisible(False)
-        test_layout.addWidget(self.test_progress)
-        
-        layout.addWidget(test_group)
-        
-        # === Log des événements ===
-        log_group = QGroupBox("Journal des Événements")
+        # === Log ===
+        log_group = QGroupBox("📝 Journal")
         log_layout = QVBoxLayout(log_group)
         
         self.log_text = QTextEdit()
         self.log_text.setMaximumHeight(150)
-        self.log_text.setFont(QFont("Courier", 8))
-        self.log_text.append("📷 Interface caméra initialisée")
+        self.log_text.setFont(QFont("Consolas", 8))
         log_layout.addWidget(self.log_text)
         
-        # Bouton pour effacer les logs
-        clear_log_btn = QPushButton("🗑️ Effacer les Logs")
-        clear_log_btn.clicked.connect(self.log_text.clear)
-        log_layout.addWidget(clear_log_btn)
+        # Bouton clear log
+        self.clear_log_btn = QPushButton("🗑️ Effacer log")
+        log_layout.addWidget(self.clear_log_btn)
         
         layout.addWidget(log_group)
         
-        # Spacer pour pousser les éléments vers le haut
+        # Spacer en bas
         layout.addStretch()
         
         return panel
     
-    def create_preview_panel(self):
-        """Création du panneau de prévisualisation"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
+    def _create_display_area(self) -> QWidget:
+        """Crée la zone d'affichage des caméras"""
+        display_widget = QWidget()
+        self.display_layout = QGridLayout(display_widget)
         
-        # Titre
-        title_label = QLabel("Prévisualisation des Caméras")
-        title_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title_label)
+        # Label par défaut
+        default_label = QLabel("Aucune caméra active\n\nSélectionnez et ouvrez une caméra\npour voir le streaming temps réel")
+        default_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        default_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #666;
+                border: 2px dashed #ccc;
+                border-radius: 10px;
+                padding: 50px;
+                background-color: #f9f9f9;
+            }
+        """)
+        self.display_layout.addWidget(default_label, 0, 0)
         
-        # Splitter pour les deux caméras
-        preview_splitter = QSplitter(Qt.Orientation.Vertical)
-        layout.addWidget(preview_splitter)
-        
-        # === Prévisualisation RealSense ===
-        realsense_frame = QFrame()
-        realsense_frame.setFrameStyle(QFrame.Shape.Box)
-        realsense_layout = QVBoxLayout(realsense_frame)
-        
-        realsense_title = QLabel("Intel RealSense D435 - Couleur + Profondeur")
-        realsense_title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        realsense_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        realsense_layout.addWidget(realsense_title)
-        
-        # Container pour les images côte à côte
-        realsense_images = QHBoxLayout()
-        
-        # Image couleur
-        color_container = QVBoxLayout()
-        color_container.addWidget(QLabel("Image Couleur"))
-        self.realsense_color_label = QLabel()
-        self.realsense_color_label.setMinimumSize(400, 300)
-        self.realsense_color_label.setStyleSheet("border: 1px solid gray; background-color: #2a2a2a;")
-        self.realsense_color_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.realsense_color_label.setText("Caméra non connectée")
-        color_container.addWidget(self.realsense_color_label)
-        realsense_images.addLayout(color_container)
-        
-        # Image de profondeur
-        depth_container = QVBoxLayout()
-        depth_container.addWidget(QLabel("Image de Profondeur"))
-        self.realsense_depth_label = QLabel()
-        self.realsense_depth_label.setMinimumSize(400, 300)
-        self.realsense_depth_label.setStyleSheet("border: 1px solid gray; background-color: #2a2a2a;")
-        self.realsense_depth_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.realsense_depth_label.setText("Profondeur non disponible")
-        depth_container.addWidget(self.realsense_depth_label)
-        realsense_images.addLayout(depth_container)
-        
-        realsense_layout.addLayout(realsense_images)
-        preview_splitter.addWidget(realsense_frame)
-        
-        # === Prévisualisation USB3 ===
-        usb3_frame = QFrame()
-        usb3_frame.setFrameStyle(QFrame.Shape.Box)
-        usb3_layout = QVBoxLayout(usb3_frame)
-        
-        usb3_title = QLabel("Caméra USB3 CMOS - Haute Résolution")
-        usb3_title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        usb3_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        usb3_layout.addWidget(usb3_title)
-        
-        self.usb3_image_label = QLabel()
-        self.usb3_image_label.setMinimumSize(800, 300)
-        self.usb3_image_label.setStyleSheet("border: 1px solid gray; background-color: #2a2a2a;")
-        self.usb3_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.usb3_image_label.setText("Caméra USB3 non connectée")
-        usb3_layout.addWidget(self.usb3_image_label)
-        
-        preview_splitter.addWidget(usb3_frame)
-        
-        # Proportions 50/50 entre les deux caméras
-        preview_splitter.setSizes([400, 400])
-        
-        # === Informations de status en bas ===
-        status_layout = QHBoxLayout()
-        
-        self.fps_display = QLabel("FPS: --")
-        self.fps_display.setStyleSheet("color: #00ff00; font-weight: bold;")
-        status_layout.addWidget(self.fps_display)
-        
-        status_layout.addStretch()
-        
-        self.resolution_display = QLabel("Résolution: --")
-        status_layout.addWidget(self.resolution_display)
-        
-        status_layout.addStretch()
-        
-        self.timestamp_display = QLabel("Dernière image: --")
-        status_layout.addWidget(self.timestamp_display)
-        
-        layout.addLayout(status_layout)
-        
-        return panel
+        return display_widget
     
-    def setup_connections(self):
-        """Configuration des connexions entre les composants"""
-        # Connexions pour sauvegarder automatiquement les paramètres
-        self.realsense_enabled.toggled.connect(self.save_camera_config)
-        self.realsense_fps.valueChanged.connect(self.save_camera_config)
-        self.usb3_enabled.toggled.connect(self.save_camera_config)
-        self.usb3_fps.valueChanged.connect(self.save_camera_config)
+    def _connect_signals(self):
+        """Connecte les signaux de l'interface"""
+        # Boutons principaux
+        self.detect_btn.clicked.connect(self._detect_cameras)
+        self.open_btn.clicked.connect(self._open_selected_camera)
+        self.close_btn.clicked.connect(self._close_selected_camera)
         
-        # Timer pour les mises à jour de status
-        self.update_timer.start(1000)  # Mise à jour chaque seconde
+        # Streaming
+        self.start_stream_btn.clicked.connect(self._start_streaming)
+        self.stop_stream_btn.clicked.connect(self._stop_streaming)
+        
+        # Capture
+        self.capture_btn.clicked.connect(self._capture_frame)
+        self.save_btn.clicked.connect(self._save_image)
+        
+        # Affichage
+        self.zoom_slider.valueChanged.connect(self._update_zoom)
+        self.show_depth_cb.toggled.connect(self._toggle_depth_view)
+        self.refresh_spinbox.valueChanged.connect(self._update_refresh_rate)
+        
+        # Sélection
+        self.camera_combo.currentTextChanged.connect(self._camera_selection_changed)
+        
+        # Log
+        self.clear_log_btn.clicked.connect(self.log_text.clear)
     
-    def detect_cameras(self):
-        """Détection des caméras disponibles"""
-        self.log_text.append("🔍 Détection des caméras en cours...")
+    def _detect_cameras(self):
+        """Détecte toutes les caméras disponibles"""
+        self._log("🔍 Détection des caméras...")
         
-        # Simulation de la détection RealSense
         try:
-            # TODO: Implémenter la vraie détection avec pyrealsense2
-            self.realsense_connected = True  # Simulation
-            self.realsense_status.setText("RealSense D435: ✅ Détectée")
-            self.log_text.append("✅ RealSense D435 détectée")
+            self.available_cameras = self.camera_manager.detect_all_cameras()
+            
+            # Mise à jour de la combo box
+            self.camera_combo.clear()
+            for camera in self.available_cameras:
+                display_name = f"{camera.name} ({camera.camera_type.value})"
+                self.camera_combo.addItem(display_name, camera)
+            
+            if self.available_cameras:
+                self._log(f"✅ {len(self.available_cameras)} caméra(s) détectée(s)")
+                self.open_btn.setEnabled(True)
+            else:
+                self._log("⚠️ Aucune caméra détectée")
+                self.open_btn.setEnabled(False)
+                
         except Exception as e:
-            self.realsense_connected = False
-            self.realsense_status.setText("RealSense D435: ❌ Non détectée")
-            self.log_text.append(f"❌ RealSense non détectée: {e}")
-        
-        # Simulation de la détection USB3
-        try:
-            # TODO: Implémenter la vraie détection avec OpenCV
-            self.usb3_connected = True  # Simulation
-            self.usb3_status.setText("Caméra USB3: ✅ Détectée")
-            self.log_text.append("✅ Caméra USB3 détectée")
-        except Exception as e:
-            self.usb3_connected = False
-            self.usb3_status.setText("Caméra USB3: ❌ Non détectée")
-            self.log_text.append(f"❌ Caméra USB3 non détectée: {e}")
+            self._log(f"❌ Erreur détection: {e}")
     
-    def start_preview(self):
-        """Démarre la prévisualisation des caméras"""
-        if not (self.realsense_connected or self.usb3_connected):
-            self.log_text.append("⚠️ Aucune caméra détectée pour la prévisualisation")
+    def _camera_selection_changed(self):
+        """Gestion du changement de sélection de caméra"""
+        current_data = self.camera_combo.currentData()
+        if current_data:
+            self.selected_camera = current_data
+            self._log(f"📷 Caméra sélectionnée: {current_data.name}")
+        else:
+            self.selected_camera = None
+    
+    def _open_selected_camera(self):
+        """Ouvre la caméra sélectionnée"""
+        if not self.selected_camera:
+            self._log("⚠️ Aucune caméra sélectionnée")
             return
         
         try:
-            # Configuration du thread d'acquisition
-            self.camera_thread = CameraThread(self.config)
-            self.camera_thread.frame_ready.connect(self.update_preview)
-            self.camera_thread.status_update.connect(self.update_camera_status)
+            # Génération d'un alias unique
+            alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
             
-            # Démarrage
-            self.camera_thread.start()
+            # Vérification si déjà ouverte
+            if alias in self.active_displays:
+                self._log(f"⚠️ Caméra {alias} déjà ouverte")
+                return
             
-            # Mise à jour de l'interface
-            self.start_preview_btn.setEnabled(False)
-            self.stop_preview_btn.setEnabled(True)
+            self._log(f"📷 Ouverture {self.selected_camera.name}...")
             
-            self.log_text.append("▶️ Prévisualisation démarrée")
+            # Ouverture via le manager
+            success = self.camera_manager.open_camera(self.selected_camera, alias)
+            
+            if success:
+                # Création du widget d'affichage
+                display_widget = CameraDisplayWidget(alias)
+                display_widget.clicked.connect(self._camera_display_clicked)
+                
+                # Ajout à la grille d'affichage
+                self._add_camera_display(alias, display_widget)
+                
+                # Activation des contrôles
+                self._update_controls_state()
+                
+                self._log(f"✅ Caméra {alias} ouverte avec succès")
+            else:
+                self._log(f"❌ Échec ouverture {self.selected_camera.name}")
+                
+        except Exception as e:
+            self._log(f"❌ Erreur ouverture caméra: {e}")
+    
+    def _close_selected_camera(self):
+        """Ferme la caméra sélectionnée"""
+        if not self.selected_camera:
+            return
+        
+        alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+        self._close_camera(alias)
+    
+    def _close_camera(self, alias: str):
+        """Ferme une caméra spécifique"""
+        try:
+            # Fermeture via le manager
+            success = self.camera_manager.close_camera(alias)
+            
+            if success:
+                # Suppression de l'affichage
+                self._remove_camera_display(alias)
+                
+                # Mise à jour des contrôles
+                self._update_controls_state()
+                
+                self._log(f"✅ Caméra {alias} fermée")
+            else:
+                self._log(f"❌ Erreur fermeture {alias}")
+                
+        except Exception as e:
+            self._log(f"❌ Erreur fermeture caméra {alias}: {e}")
+    
+    def _add_camera_display(self, alias: str, display_widget: CameraDisplayWidget):
+        """Ajoute un widget d'affichage à la grille"""
+        # Suppression du label par défaut s'il existe
+        if not self.active_displays:
+            for i in reversed(range(self.display_layout.count())):
+                self.display_layout.itemAt(i).widget().setParent(None)
+        
+        # Calcul de la position dans la grille
+        num_cameras = len(self.active_displays)
+        cols = min(2, num_cameras + 1)  # Max 2 colonnes
+        row = num_cameras // cols
+        col = num_cameras % cols
+        
+        # Ajout à la grille
+        self.display_layout.addWidget(display_widget, row, col)
+        self.active_displays[alias] = display_widget
+        
+        self._log(f"🖼️ Affichage {alias} ajouté à la grille")
+    
+    def _remove_camera_display(self, alias: str):
+        """Supprime un widget d'affichage de la grille"""
+        if alias in self.active_displays:
+            widget = self.active_displays[alias]
+            widget.setParent(None)
+            del self.active_displays[alias]
+            
+            # Réorganisation de la grille
+            self._reorganize_display_grid()
+            
+            self._log(f"🖼️ Affichage {alias} supprimé")
+    
+    def _reorganize_display_grid(self):
+        """Réorganise la grille d'affichage"""
+        if not self.active_displays:
+            # Remise du label par défaut
+            default_label = QLabel("Aucune caméra active\n\nSélectionnez et ouvrez une caméra\npour voir le streaming temps réel")
+            default_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            default_label.setStyleSheet("""
+                QLabel {
+                    font-size: 14px;
+                    color: #666;
+                    border: 2px dashed #ccc;
+                    border-radius: 10px;
+                    padding: 50px;
+                    background-color: #f9f9f9;
+                }
+            """)
+            self.display_layout.addWidget(default_label, 0, 0)
+            return
+        
+        # Repositionnement des widgets existants
+        widgets = list(self.active_displays.values())
+        for i, widget in enumerate(widgets):
+            cols = min(2, len(widgets))
+            row = i // cols
+            col = i % cols
+            self.display_layout.addWidget(widget, row, col)
+    
+    def _start_streaming(self):
+        """Démarre le streaming temps réel"""
+        if self.is_streaming:
+            return
+        
+        if not self.active_displays:
+            self._log("⚠️ Aucune caméra active pour le streaming")
+            return
+        
+        try:
+            self._log("🎬 Démarrage du streaming...")
+            
+            # Démarrage du streaming via le manager
+            self.camera_manager.start_streaming(self._on_new_frames)
+            
+            # Démarrage des timers
+            refresh_ms = self.refresh_spinbox.value()
+            self.update_timer.start(refresh_ms)
+            self.stats_timer.start(1000)  # Stats toutes les secondes
+            
+            self.is_streaming = True
+            self._update_controls_state()
+            
+            self._log("✅ Streaming démarré")
             
         except Exception as e:
-            self.log_text.append(f"❌ Erreur démarrage prévisualisation: {e}")
+            self._log(f"❌ Erreur démarrage streaming: {e}")
     
-    def stop_preview(self):
-        """Arrête la prévisualisation des caméras"""
+    def _stop_streaming(self):
+        """Arrête le streaming"""
+        if not self.is_streaming:
+            return
+        
         try:
-            if self.camera_thread and self.camera_thread.isRunning():
-                self.camera_thread.stop()
-                self.camera_thread.wait()
+            self._log("🛑 Arrêt du streaming...")
             
-            # Mise à jour de l'interface
-            self.start_preview_btn.setEnabled(True)
-            self.stop_preview_btn.setEnabled(False)
+            # Arrêt des timers
+            self.update_timer.stop()
+            self.stats_timer.stop()
             
-            # Nettoyage des images
-            self.realsense_color_label.setText("Prévisualisation arrêtée")
-            self.realsense_depth_label.setText("Prévisualisation arrêtée")
-            self.usb3_image_label.setText("Prévisualisation arrêtée")
+            # Arrêt du streaming via le manager
+            self.camera_manager.stop_streaming()
             
-            self.log_text.append("⏹️ Prévisualisation arrêtée")
+            self.is_streaming = False
+            self._update_controls_state()
+            
+            self._log("✅ Streaming arrêté")
             
         except Exception as e:
-            self.log_text.append(f"❌ Erreur arrêt prévisualisation: {e}")
+            self._log(f"❌ Erreur arrêt streaming: {e}")
     
-    def update_preview(self, frame_data):
-        """Met à jour la prévisualisation avec les nouvelles images"""
+    def _on_new_frames(self, frames_data: dict):
+        """Callback appelé lors de nouveaux frames"""
+        # Cette méthode est appelée par le thread de streaming
+        # Les mises à jour de l'interface se font dans _update_camera_frames
+        pass
+    
+    def _update_camera_frames(self):
+        """Met à jour l'affichage des frames de toutes les caméras"""
+        if not self.is_streaming:
+            return
+        
         try:
-            # frame_data contient les images des caméras
-            # TODO: Convertir les numpy arrays en QPixmap et afficher
+            # Récupération des frames de toutes les caméras
+            all_frames = self.camera_manager.get_all_frames()
             
-            # Pour l'instant, simulation
-            self.realsense_color_label.setText("📹 Image en cours...")
-            self.realsense_depth_label.setText("📊 Profondeur en cours...")
-            self.usb3_image_label.setText("📷 USB3 en cours...")
-            
+            for alias, (ret, color_frame, depth_frame) in all_frames.items():
+                if alias in self.active_displays and ret:
+                    display_widget = self.active_displays[alias]
+                    display_widget.update_frame(color_frame, depth_frame)
+                    
         except Exception as e:
-            self.log_text.append(f"❌ Erreur mise à jour preview: {e}")
+            self._log(f"❌ Erreur mise à jour frames: {e}")
     
-    def update_camera_status(self, status_info):
-        """Met à jour les informations de status des caméras"""
+    def _update_statistics(self):
+        """Met à jour les statistiques affichées"""
+        if not self.show_stats_cb.isChecked():
+            return
+        
         try:
-            fps = status_info.get('fps', '--')
-            resolution = status_info.get('resolution', '--')
-            timestamp = status_info.get('timestamp', '--')
+            # Récupération des stats de toutes les caméras
+            all_stats = self.camera_manager.get_all_stats()
             
-            self.fps_display.setText(f"FPS: {fps}")
-            self.resolution_display.setText(f"Résolution: {resolution}")
-            self.timestamp_display.setText(f"Dernière image: {timestamp}")
-            
+            # Affichage dans le tableau (caméra sélectionnée ou première active)
+            if self.selected_camera:
+                alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+                if alias in all_stats:
+                    self._display_camera_stats(all_stats[alias])
+            elif all_stats:
+                # Première caméra active
+                first_alias = next(iter(all_stats))
+                self._display_camera_stats(all_stats[first_alias])
+                
         except Exception as e:
-            logger.warning(f"Erreur mise à jour status caméra: {e}")
+            self._log(f"❌ Erreur mise à jour stats: {e}")
     
-    def test_latency(self):
-        """Test de latence des caméras"""
-        self.log_text.append("📊 Test de latence en cours...")
-        self.test_progress.setVisible(True)
-        self.test_progress.setValue(0)
+    def _display_camera_stats(self, stats: dict):
+        """Affiche les statistiques d'une caméra dans le tableau"""
+        self.stats_table.setRowCount(0)
         
-        # Simulation du test
-        for i in range(101):
-            self.test_progress.setValue(i)
-            QApplication.processEvents()
+        # Propriétés à afficher
+        display_props = [
+            ("Nom", stats.get('name', 'N/A'), ""),
+            ("Type", stats.get('type', 'N/A'), ""),
+            ("Résolution", stats.get('resolution', stats.get('color_resolution', 'N/A')), "pixels"),
+            ("FPS actuel", f"{stats.get('fps', 0):.1f}", "fps"),
+            ("Frames total", str(stats.get('frame_count', 0)), ""),
+            ("Dernière frame", time.strftime("%H:%M:%S", time.localtime(stats.get('last_timestamp', 0))), ""),
+            ("État", "Actif" if stats.get('is_active', False) else "Inactif", "")
+        ]
         
-        # Résultats simulés
-        latency = 15.2  # ms
-        fps_measured = 28.7
+        # Ajout des propriétés spécifiques RealSense
+        if stats.get('type') == 'realsense':
+            depth_res = stats.get('depth_resolution', 'N/A')
+            if depth_res != 'N/A':
+                display_props.insert(3, ("Profondeur", depth_res, "pixels"))
         
-        self.performance_label.setText(f"Latence: {latency} ms | FPS: {fps_measured}")
-        self.log_text.append(f"✅ Test terminé - Latence: {latency}ms, FPS: {fps_measured}")
-        
-        self.test_progress.setVisible(False)
+        # Remplissage du tableau
+        for i, (prop, value, unit) in enumerate(display_props):
+            self.stats_table.insertRow(i)
+            self.stats_table.setItem(i, 0, QTableWidgetItem(prop))
+            self.stats_table.setItem(i, 1, QTableWidgetItem(str(value)))
+            self.stats_table.setItem(i, 2, QTableWidgetItem(unit))
     
-    def save_camera_config(self):
-        """Sauvegarde la configuration des caméras"""
+    def _update_controls_state(self):
+        """Met à jour l'état des contrôles selon le contexte"""
+        has_cameras = len(self.active_displays) > 0
+        
+        # Boutons de base
+        self.close_btn.setEnabled(self.selected_camera is not None and has_cameras)
+        
+        # Streaming
+        self.start_stream_btn.setEnabled(has_cameras and not self.is_streaming)
+        self.stop_stream_btn.setEnabled(self.is_streaming)
+        
+        # Capture
+        self.capture_btn.setEnabled(has_cameras and self.is_streaming)
+        self.save_btn.setEnabled(has_cameras)
+    
+    def _update_refresh_rate(self):
+        """Met à jour la fréquence de rafraîchissement"""
+        if self.is_streaming:
+            refresh_ms = self.refresh_spinbox.value()
+            self.update_timer.setInterval(refresh_ms)
+            self._log(f"🔄 Refresh rate: {1000/refresh_ms:.1f} FPS")
+    
+    def _update_zoom(self):
+        """Met à jour le zoom de tous les affichages"""
+        zoom_value = self.zoom_slider.value()
+        zoom_factor = zoom_value / 100.0  # 100 = 1.0x
+        self.zoom_label.setText(f"{zoom_factor:.1f}x")
+        
+        # Application à tous les affichages
+        for display_widget in self.active_displays.values():
+            display_widget.set_zoom(zoom_factor)
+    
+    def _toggle_depth_view(self):
+        """Bascule l'affichage profondeur sur tous les widgets"""
+        show_depth = self.show_depth_cb.isChecked()
+        
+        for display_widget in self.active_displays.values():
+            display_widget.show_depth = show_depth
+        
+        self._log(f"👁️ Vue profondeur: {'Activée' if show_depth else 'Désactivée'}")
+    
+    def _camera_display_clicked(self, alias: str):
+        """Gestion du clic sur un affichage de caméra"""
+        self._log(f"🖱️ Clic sur caméra: {alias}")
+        self.camera_selected.emit(alias)
+    
+    def _capture_frame(self):
+        """Capture une frame de la caméra sélectionnée"""
+        if not self.selected_camera:
+            self._log("⚠️ Aucune caméra sélectionnée pour la capture")
+            return
+        
+        alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+        
         try:
-            # Mise à jour de la configuration
-            self.config.set('camera', 'realsense.enabled', self.realsense_enabled.isChecked())
-            self.config.set('camera', 'realsense.color_stream.fps', self.realsense_fps.value())
-            self.config.set('camera', 'usb3_camera.enabled', self.usb3_enabled.isChecked())
-            self.config.set('camera', 'usb3_camera.fps', self.usb3_fps.value())
-            self.config.set('camera', 'usb3_camera.device_id', self.usb3_device_id.value())
-            self.config.set('camera', 'general.save_images', self.save_images.isChecked())
+            ret, color_frame, depth_frame = self.camera_manager.get_camera_frame(alias)
             
-            # Sauvegarde
-            self.config.save_config('camera')
-            
+            if ret and color_frame is not None:
+                # Émission du signal avec la frame
+                frame_data = {
+                    'alias': alias,
+                    'color': color_frame,
+                    'depth': depth_frame,
+                    'timestamp': time.time()
+                }
+                self.frame_captured.emit(alias, frame_data)
+                self._log(f"📸 Frame capturée: {alias}")
+            else:
+                self._log(f"❌ Impossible de capturer une frame de {alias}")
+                
         except Exception as e:
-            logger.warning(f"Erreur sauvegarde config caméra: {e}")
+            self._log(f"❌ Erreur capture frame: {e}")
     
-    def update_status(self):
-        """Mise à jour périodique du status"""
-        try:
-            # Mise à jour des informations de performance si caméras actives
-            if hasattr(self, 'camera_thread') and self.camera_thread and self.camera_thread.isRunning():
-                # Simulation de données en temps réel
-                import time
-                current_time = time.strftime("%H:%M:%S")
-                self.timestamp_display.setText(f"Dernière image: {current_time}")
+    def _save_image(self):
+        """Sauvegarde l'image de la caméra sélectionnée"""
+        if not self.selected_camera:
+            self._log("⚠️ Aucune caméra sélectionnée pour la sauvegarde")
+            return
         
-        except Exception:
-            pass
+        # Sélection du fichier
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        default_name = f"camera_{self.selected_camera.camera_type.value}_{timestamp}.jpg"
+        
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Sauvegarder image",
+            default_name,
+            "Images (*.jpg *.jpeg *.png);;Tous les fichiers (*)"
+        )
+        
+        if filepath:
+            alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+            success = self.camera_manager.save_camera_frame(alias, filepath)
+            
+            if success:
+                self._log(f"💾 Image sauvegardée: {filepath}")
+            else:
+                self._log(f"❌ Erreur sauvegarde: {filepath}")
     
-    def get_status_info(self):
-        """Retourne les informations de status pour la barre principale"""
-        if hasattr(self, 'camera_thread') and self.camera_thread and self.camera_thread.isRunning():
-            return "📷 Caméras actives - Acquisition en cours"
-        elif self.realsense_connected or self.usb3_connected:
-            return f"📷 {int(self.realsense_connected) + int(self.usb3_connected)} caméra(s) détectée(s)"
-        else:
-            return "📷 Aucune caméra détectée"
+    def _log(self, message: str):
+        """Ajoute un message au log avec timestamp"""
+        timestamp = time.strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}"
+        
+        self.log_text.append(formatted_message)
+        
+        # Auto-scroll
+        self.log_text.verticalScrollBar().setValue(
+            self.log_text.verticalScrollBar().maximum()
+        )
+        
+        # Limitation du nombre de lignes
+        if self.log_text.document().blockCount() > 100:
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.select(cursor.SelectionType.BlockUnderCursor)
+            cursor.removeSelectedText()
     
-    def cleanup(self):
+    def closeEvent(self, event):
         """Nettoyage lors de la fermeture"""
         try:
-            self.stop_preview()
-            self.update_timer.stop()
-            self.save_camera_config()
-            logger.info("🧹 CameraTab nettoyé")
+            self._stop_streaming()
+            self.camera_manager.close_all_cameras()
+            self._log("🔄 Nettoyage terminé")
         except Exception as e:
-            logger.warning(f"Erreur nettoyage CameraTab: {e}")
-
-
-class CameraThread(QThread):
-    """Thread dédié à l'acquisition caméra"""
+            logger.error(f"❌ Erreur nettoyage: {e}")
+        
+        event.accept()
     
-    frame_ready = pyqtSignal(dict)
-    status_update = pyqtSignal(dict)
+    # === Méthodes publiques pour intégration ===
     
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.running = False
-        self.frame_count = 0
-        
-    def run(self):
-        """Boucle d'acquisition principale"""
-        self.running = True
-        logger.info("🚀 Thread caméra démarré")
-        
-        import time
-        
-        while self.running:
-            try:
-                # Simulation d'acquisition d'images
-                # TODO: Implémenter la vraie acquisition avec les drivers
-                
-                time.sleep(1/30)  # Simulation 30 FPS
-                
-                # Données simulées
-                frame_data = {
-                    'realsense_color': np.zeros((480, 640, 3), dtype=np.uint8),
-                    'realsense_depth': np.zeros((480, 640), dtype=np.uint16),
-                    'usb3_image': np.zeros((1024, 1280, 3), dtype=np.uint8)
-                }
-                
-                status_info = {
-                    'fps': 30,
-                    'resolution': '640x480',
-                    'timestamp': time.strftime("%H:%M:%S")
-                }
-                
-                self.frame_ready.emit(frame_data)
-                self.status_update.emit(status_info)
-                
-                self.frame_count += 1
-                
-            except Exception as e:
-                logger.error(f"Erreur dans thread caméra: {e}")
-                break
-        
-        logger.info("⏹️ Thread caméra arrêté")
+    def get_active_cameras(self) -> dict:
+        """Retourne les caméras actives"""
+        return {alias: data['info'] for alias, data in self.camera_manager.active_cameras.items()}
     
-    def stop(self):
-        """Arrêt du thread"""
-        self.running = False
+    def get_camera_intrinsics(self, alias: str) -> dict:
+        """Récupère les paramètres intrinsèques d'une caméra"""
+        return self.camera_manager.get_camera_intrinsics(alias)
+    
+    def is_camera_streaming(self) -> bool:
+        """Indique si le streaming est actif"""
+        return self.is_streaming
+    
+    def get_current_frame(self, alias: str) -> tuple:
+        """Récupère la frame actuelle d'une caméra"""
+        return self.camera_manager.get_camera_frame(alias)
