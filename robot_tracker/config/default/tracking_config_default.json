@@ -1,0 +1,38 @@
+{
+  "aruco": {
+    "dictionary": "DICT_5X5_100",
+    "marker_size": 0.05,
+    "detection_params": {
+      "adaptiveThreshWinSizeMin": 3,
+      "adaptiveThreshWinSizeMax": 23,
+      "adaptiveThreshWinSizeStep": 10,
+      "minMarkerPerimeterRate": 0.03,
+      "maxMarkerPerimeterRate": 4.0
+    }
+  },
+  "reflective_markers": {
+    "enabled": true,
+    "hsv_lower": [
+      0,
+      0,
+      200
+    ],
+    "hsv_upper": [
+      180,
+      30,
+      255
+    ],
+    "min_area": 50,
+    "max_area": 5000
+  },
+  "kalman_filter": {
+    "enabled": true,
+    "process_noise": 0.01,
+    "measurement_noise": 0.1
+  },
+  "precision": {
+    "target_accuracy_mm": 1.0,
+    "max_deviation_mm": 2.0,
+    "repeatability_mm": 0.5
+  }
+}

@@ -1,0 +1,142 @@
+# ============================================================================
+# Robot Trajectory Controller - Requirements
+# Dépendances Python pour l'application de tracking robotique
+# ============================================================================
+
+# Interface graphique PyQt6
+# -------------------------
+PyQt6>=6.6.0
+PyQt6-tools>=6.4.2.3.3
+
+# Vision par ordinateur et traitement d'images
+# ---------------------------------------------
+opencv-python>=4.8.1
+opencv-contrib-python>=4.8.1
+
+# Caméra Intel RealSense
+# ----------------------
+pyrealsense2>=2.55.1
+
+# Visualisation 3D et nuages de points
+# ------------------------------------
+open3d>=0.19.0
+
+# Calcul scientifique et algèbre linéaire
+# ---------------------------------------
+numpy>=1.24.3
+scipy>=1.11.4
+
+# Manipulation et analyse de données
+# ----------------------------------
+pandas>=2.1.4
+
+# Génération de rapports PDF
+# ---------------------------
+reportlab>=4.0.8
+
+# Communication série et réseau
+# -----------------------------
+pyserial>=3.5
+
+# Configuration et sérialisation
+# ------------------------------
+# (json est inclus dans la stdlib Python)
+
+# Gestion des fichiers et chemins
+# -------------------------------
+pathlib2>=2.3.7; python_version<"3.4"
+
+# Optimisation et calculs avancés
+# -------------------------------
+scikit-learn>=1.3.2  # Pour Kalman filtering et machine learning
+matplotlib>=3.8.2    # Pour graphiques et visualisations
+
+# Gestion du temps et scheduling
+# ------------------------------
+APScheduler>=3.10.4  # Pour tâches programmées et acquisition périodique
+
+# Logging et debugging avancé
+# ---------------------------
+coloredlogs>=15.0.1  # Logs colorés pour debugging
+
+# Tests et qualité du code (optionnel pour développement)
+# -------------------------------------------------------
+pytest>=7.4.3
+pytest-qt>=4.2.0    # Tests spécifiques PyQt
+black>=23.12.1       # Formatage de code
+flake8>=6.1.0        # Vérification style
+
+# Dépendances système (selon OS)
+# ------------------------------
+# Linux uniquement
+v4l2py>=0.6.0; sys_platform=="linux"    # Video4Linux pour caméras USB
+
+# Windows uniquement  
+pywin32>=306; sys_platform=="win32"     # API Windows pour COM
+
+# Performance et optimisation
+# ---------------------------
+numba>=0.58.1        # JIT compilation pour accélération calculs
+Cython>=3.0.6        # Compilation C pour parties critiques
+
+# Formats de données spécialisés
+# ------------------------------
+h5py>=3.10.0         # Format HDF5 pour gros datasets
+pillow>=10.1.0       # Manipulation d'images avancée
+
+# Utilitaires développement
+# -------------------------
+tqdm>=4.66.1          # Barres de progression
+click>=8.1.7          # Interface ligne de commande
+pyyaml>=6.0.1         # Support YAML si besoin config alternative
+
+# ============================================================================
+# Notes d'installation
+# ============================================================================
+
+# Installation recommandée:
+# 1. Créer un environnement virtuel
+#    python -m venv robot_tracker_env
+#    source robot_tracker_env/bin/activate  # Linux/Mac
+#    robot_tracker_env\Scripts\activate     # Windows
+
+# 2. Mise à jour pip
+#    python -m pip install --upgrade pip
+
+# 3. Installation des dépendances
+#    pip install -r requirements.txt
+
+# 4. Installation Intel RealSense (si problèmes)
+#    Suivre: https://github.com/IntelRealSense/librealsense/blob/master/doc/distribution_linux.md
+
+# 5. Test de l'installation
+#    python -c "import cv2, pyrealsense2, PyQt6, open3d; print('OK')"
+
+# ============================================================================
+# Versions de développement (pour référence)
+# ============================================================================
+# Testé avec:
+# - Python 3.15
+# - Ubuntu 20.04+ / Windows 10+
+# - Intel RealSense D435
+# - Caméras USB3 CMOS industrielles
+
+# ============================================================================
+# Dépendances optionnelles pour phases avancées
+# ============================================================================
+
+# Pour BundleSDF (Phase 2)
+# ------------------------
+# torch>=2.1.0
+# torchvision>=0.16.0
+# trimesh>=4.0.0
+
+# Pour DINO-Tracker (Phase 2)  
+# ---------------------------
+# transformers>=4.35.0
+# timm>=0.9.12
+
+# Communication robots industriels
+# --------------------------------
+# opcua>=0.98.13        # OPC-UA pour communication industrielle
+# modbus-tk>=1.1.3      # Modbus TCP/IP

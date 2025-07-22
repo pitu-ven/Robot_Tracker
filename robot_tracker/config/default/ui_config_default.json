@@ -1,0 +1,38 @@
+{
+  "window": {
+    "title": "Robot Trajectory Controller v1.0",
+    "width": 1400,
+    "height": 900,
+    "fullscreen": false,
+    "resizable": true,
+    "center_on_screen": true
+  },
+  "tabs": {
+    "default_tab": 0,
+    "tab_names": [
+      "Caméra",
+      "Trajectoire",
+      "Cible",
+      "Calibration",
+      "Mesures"
+    ],
+    "tab_icons": [
+      "camera.png",
+      "trajectory.png",
+      "target.png",
+      "calibration.png",
+      "measures.png"
+    ]
+  },
+  "theme": {
+    "style": "Fusion",
+    "palette": "dark",
+    "font_family": "Arial",
+    "font_size": 10
+  },
+  "layout": {
+    "status_bar": true,
+    "toolbar": true,
+    "menu_bar": true
+  }
+}

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# PyQt
+*.qrc
+*.ui
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Données
+data/*.jpg
+data/*.png
+data/*.avi
+logs/*.log
+
+# Rapports générés
+reports/*.pdf
+
+# Configuration locale (ne pas versionner)
+config/*_config.json
+!config/default/

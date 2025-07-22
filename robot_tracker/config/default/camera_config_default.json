@@ -1,0 +1,36 @@
+{
+  "realsense": {
+    "enabled": true,
+    "color_stream": {
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "format": "bgr8"
+    },
+    "depth_stream": {
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "format": "z16"
+    },
+    "auto_exposure": true,
+    "exposure_time": 8500,
+    "gain": 64
+  },
+  "usb3_camera": {
+    "enabled": true,
+    "device_id": 0,
+    "width": 2448,
+    "height": 2048,
+    "fps": 20,
+    "exposure": -6,
+    "gain": 0,
+    "buffer_size": 1
+  },
+  "general": {
+    "preview_fps": 15,
+    "save_images": false,
+    "image_format": "jpg",
+    "timestamp_images": true
+  }
+}
