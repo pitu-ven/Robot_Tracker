@@ -132,13 +132,9 @@ class CameraDemoWindow(QMainWindow):
         try:
             # Import dynamique pour gérer les erreurs
             from ui.camera_tab import CameraTab
-            from core.camera_manager import CameraManager
             
-            # Création du gestionnaire de caméras
-            camera_manager = CameraManager(self.config)
-            
-            # Création de l'onglet caméra
-            self.camera_tab = CameraTab(self.config, camera_manager)
+            # Création de l'onglet caméra avec les bons paramètres
+            self.camera_tab = CameraTab(self.config)
             self.main_layout.addWidget(self.camera_tab)
             
             # Connexion des signaux
