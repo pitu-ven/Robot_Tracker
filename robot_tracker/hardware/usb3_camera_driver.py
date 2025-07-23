@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/hardware/usb3_camera_driver.py
-Driver pour caméra USB3 CMOS entièrement configurable JSON - Version 1.3
-Modification: Configuration 100% dynamique via camera_config.json pour correction image noire
+Driver pour caméra USB3 CMOS avec correction image noire - Version 1.4
+Modification: Correction agressive du problème d'image noire avec validation flux
 """
 
 import cv2
@@ -20,7 +20,7 @@ class USB3CameraError(Exception):
     pass
 
 class USB3CameraDriver:
-    """Driver pour caméra USB3 CMOS entièrement configurable via JSON"""
+    """Driver pour caméra USB3 CMOS avec correction agressive image noire"""
     
     def __init__(self, device_id: int = 0, config: Optional[Dict] = None):
         self.device_id = device_id
@@ -31,25 +31,25 @@ class USB3CameraDriver:
         self.is_open = False
         self.is_streaming = False
         
-        # Configuration depuis JSON avec fallback optimisés pour image noire
+        # Configuration depuis JSON
         self.width = self.config.get('width', 640)
         self.height = self.config.get('height', 480)
         self.fps = self.config.get('fps', 30)
         self.buffer_size = self.config.get('buffer_size', 1)
         
-        # PARAMÈTRES CORRIGÉS POUR IMAGE NOIRE - Configurables JSON
-        self.auto_exposure = self.config.get('auto_exposure', False)  # Désactivé par défaut
-        self.exposure = self.config.get('exposure', -4)  # Exposition plus élevée
-        self.gain = self.config.get('gain', 30)          # Gain augmenté
-        self.brightness = self.config.get('brightness', 150)  # Luminosité élevée (0-255)
-        self.contrast = self.config.get('contrast', 80)       # Contraste élevé (0-100)
-        self.saturation = self.config.get('saturation', 70)   # Saturation (0-100)
+        # PARAMÈTRES AGRESSIFS POUR CORRECTION IMAGE NOIRE
+        self.auto_exposure = self.config.get('auto_exposure', True)
+        self.exposure = self.config.get('exposure', -1)
+        self.gain = self.config.get('gain', 100)
+        self.brightness = self.config.get('brightness', 255)
+        self.contrast = self.config.get('contrast', 100)
+        self.saturation = self.config.get('saturation', 100)
         
-        # PARAMÈTRES AVANCÉS CONFIGURABLES
-        self.backend_preference = self.config.get('backend_preference', ['dshow', 'msmf', 'auto'])
-        self.stabilization_delay = self.config.get('stabilization_delay', 1.0)  # Délai stabilisation
-        self.intensity_target = self.config.get('intensity_target', 40.0)  # Intensité cible
-        self.emergency_boost = self.config.get('emergency_boost', True)  # Boost automatique
+        # Paramètres de correction avancés
+        self.stabilization_delay = self.config.get('stabilization_delay', 2.0)
+        self.intensity_target = self.config.get('intensity_target', 30.0)
+        self.max_correction_attempts = self.config.get('max_correction_attempts', 5)
+        self.force_manual_exposure = self.config.get('force_manual_exposure', True)
         
         # Streaming
         self.streaming_thread = None
@@ -57,243 +57,298 @@ class USB3CameraDriver:
         self.frame_lock = Lock()
         self.latest_frame = None
         
-        logger.info(f"🔧 USB3CameraDriver configurable initialisé (device_id={device_id})")
-        logger.debug(f"📋 Config: exp={self.exposure}, gain={self.gain}, brightness={self.brightness}")
+        logger.info(f"🔧 USB3CameraDriver v1.4 initialisé (device_id={device_id})")
     
     def open(self) -> bool:
-        """Ouvre la connexion avec la caméra en utilisant la config JSON"""
+        """Ouvre la connexion avec configuration agressive anti-image-noire"""
         try:
             if self.is_open:
                 logger.warning("⚠️ Caméra déjà ouverte")
                 return True
             
-            logger.info(f"📷 Ouverture caméra USB3 {self.device_id}...")
+            logger.info(f"📷 Ouverture caméra USB3 {self.device_id} avec correction image noire...")
             
-            # Test des backends selon préférence de config
-            backend_map = {
-                'dshow': cv2.CAP_DSHOW,
-                'msmf': cv2.CAP_MSMF,
-                'v4l2': cv2.CAP_V4L2,
-                'auto': -1
-            }
-            
-            backends_to_try = []
-            for backend_name in self.backend_preference:
-                if backend_name in backend_map:
-                    backends_to_try.append((backend_map[backend_name], backend_name))
-            
-            # Fallback si config invalide
-            if not backends_to_try:
-                backends_to_try = [(cv2.CAP_DSHOW, "DirectShow"), (-1, "Auto")]
-            
-            for backend_id, backend_name in backends_to_try:
-                try:
-                    logger.debug(f"🔍 Test backend {backend_name}...")
-                    
-                    if backend_id == -1:
-                        self.cap = cv2.VideoCapture(self.device_id)
-                    else:
-                        self.cap = cv2.VideoCapture(self.device_id, backend_id)
-                    
-                    if self.cap.isOpened():
-                        logger.info(f"✅ Backend {backend_name} sélectionné")
-                        break
-                    else:
-                        if self.cap:
-                            self.cap.release()
-                        self.cap = None
-                        
-                except Exception as e:
-                    logger.debug(f"❌ Backend {backend_name} échoué: {e}")
-                    if self.cap:
-                        self.cap.release()
-                    self.cap = None
-                    continue
-            
-            if not self.cap or not self.cap.isOpened():
-                raise USB3CameraError(f"Impossible d'ouvrir la caméra {self.device_id}")
-            
-            # Configuration des paramètres depuis JSON
-            self._configure_camera_from_json()
-            
-            # Test de capture avec validation d'intensité
-            success = self._validate_image_quality()
+            # Ouverture avec backend optimal
+            success = self._open_with_best_backend()
             if not success:
-                logger.warning("⚠️ Qualité d'image insuffisante, mais on continue")
+                return False
             
-            self.is_open = True
-            logger.info(f"✅ Caméra USB3 {self.device_id} ouverte avec succès")
-            return True
+            # Configuration agressive
+            self._configure_aggressive_anti_black()
             
+            # Validation avec correction automatique
+            validation_success = self._validate_and_correct_image()
+            
+            if validation_success:
+                self.is_open = True
+                logger.info(f"✅ Caméra USB3 {self.device_id} ouverte et corrigée")
+                return True
+            else:
+                logger.warning("⚠️ Validation échouée mais caméra ouverte")
+                self.is_open = True
+                return True
+                
         except Exception as e:
             logger.error(f"❌ Erreur ouverture caméra USB3: {e}")
             self.close()
             return False
     
-    def _configure_camera_from_json(self):
-        """Configuration complète de la caméra depuis les paramètres JSON"""
+    def _open_with_best_backend(self) -> bool:
+        """Ouvre avec le meilleur backend disponible"""
+        backends = [
+            (cv2.CAP_DSHOW, "DirectShow"),
+            (cv2.CAP_MSMF, "Media Foundation"),
+            (-1, "Auto")
+        ]
+        
+        for backend_id, backend_name in backends:
+            try:
+                logger.debug(f"🔍 Test backend {backend_name}...")
+                
+                if backend_id == -1:
+                    self.cap = cv2.VideoCapture(self.device_id)
+                else:
+                    self.cap = cv2.VideoCapture(self.device_id, backend_id)
+                
+                if self.cap.isOpened():
+                    # Test rapide de capture
+                    ret, frame = self.cap.read()
+                    if ret and frame is not None:
+                        logger.info(f"✅ Backend {backend_name} sélectionné")
+                        return True
+                    else:
+                        logger.debug(f"⚠️ {backend_name}: ouvert mais pas de frame")
+                
+                if self.cap:
+                    self.cap.release()
+                self.cap = None
+                
+            except Exception as e:
+                logger.debug(f"❌ Backend {backend_name}: {e}")
+                if self.cap:
+                    self.cap.release()
+                self.cap = None
+        
+        raise USB3CameraError(f"Impossible d'ouvrir la caméra {self.device_id} avec tous les backends")
+    
+    def _configure_aggressive_anti_black(self):
+        """Configuration AGRESSIVE pour corriger l'image noire"""
         if not self.cap:
             return
         
-        logger.info("🔧 Configuration caméra depuis paramètres JSON...")
+        logger.info("🔧 Configuration AGRESSIVE anti-image-noire...")
         
-        # === PARAMÈTRES DE BASE ===
-        logger.debug(f"📐 Résolution: {self.width}x{self.height} @ {self.fps}fps")
+        # Résolution et buffer
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.buffer_size)
         
-        # === CORRECTION IMAGE NOIRE - PARAMÈTRES JSON ===
-        logger.debug(f"💡 Luminosité/Contraste: {self.brightness}/{self.contrast}")
+        # ÉTAPE 1: Auto-exposition forcée
+        logger.debug("📸 Forçage auto-exposition...")
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
         
-        # Auto-exposition selon config
-        auto_exp_value = 1 if self.auto_exposure else 0
-        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exp_value)
-        logger.debug(f"📸 Auto-exposition: {'ON' if self.auto_exposure else 'OFF'}")
-        
-        # Paramètres de luminosité depuis JSON
-        # Note: OpenCV utilise des valeurs normalisées (0.0-1.0) pour certains paramètres
-        brightness_normalized = self.brightness / 255.0  # Conversion 0-255 -> 0.0-1.0
-        contrast_normalized = self.contrast / 100.0       # Conversion 0-100 -> 0.0-1.0
-        saturation_normalized = self.saturation / 100.0   # Conversion 0-100 -> 0.0-1.0
-        
-        self.cap.set(cv2.CAP_PROP_BRIGHTNESS, brightness_normalized)
-        self.cap.set(cv2.CAP_PROP_CONTRAST, contrast_normalized)
-        self.cap.set(cv2.CAP_PROP_SATURATION, saturation_normalized)
+        # ÉTAPE 2: Paramètres au maximum
+        logger.debug("💡 Paramètres luminosité au maximum...")
+        self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 1.0)
+        self.cap.set(cv2.CAP_PROP_CONTRAST, 1.0)
+        self.cap.set(cv2.CAP_PROP_SATURATION, 1.0)
         self.cap.set(cv2.CAP_PROP_GAIN, self.gain)
         
-        # Exposition manuelle si nécessaire
-        if not self.auto_exposure:
-            self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
-            logger.debug(f"📸 Exposition manuelle: {self.exposure}")
-        
-        # === ATTENDRE STABILISATION (configurable) ===
-        logger.debug(f"⏳ Stabilisation pendant {self.stabilization_delay}s...")
+        # ÉTAPE 3: Attente stabilisation prolongée
+        logger.debug(f"⏳ Stabilisation {self.stabilization_delay}s...")
         time.sleep(self.stabilization_delay)
         
-        # Vérifier les paramètres appliqués
+        # Log des paramètres appliqués
         self._log_applied_parameters()
     
-    def _log_applied_parameters(self):
-        """Affiche les paramètres réellement appliqués par OpenCV"""
-        try:
-            actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-            actual_brightness = self.cap.get(cv2.CAP_PROP_BRIGHTNESS)
-            actual_contrast = self.cap.get(cv2.CAP_PROP_CONTRAST)
-            actual_exposure = self.cap.get(cv2.CAP_PROP_EXPOSURE)
-            actual_gain = self.cap.get(cv2.CAP_PROP_GAIN)
-            actual_auto_exp = self.cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
-            
-            logger.info(f"📐 Appliqué: {actual_width}x{actual_height} @ {actual_fps:.1f}fps")
-            logger.debug(f"💡 Luminosité: {actual_brightness:.3f} (demandé: {self.brightness/255:.3f})")
-            logger.debug(f"📊 Contraste: {actual_contrast:.3f} (demandé: {self.contrast/100:.3f})")
-            logger.debug(f"📸 Exposition: {actual_exposure:.2f} (demandé: {self.exposure})")
-            logger.debug(f"📈 Gain: {actual_gain:.2f} (demandé: {self.gain})")
-            logger.debug(f"🔄 Auto-exp: {actual_auto_exp} (demandé: {1 if self.auto_exposure else 0})")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Impossible de lire les paramètres appliqués: {e}")
-    
-    def _validate_image_quality(self) -> bool:
-        """Valide la qualité de l'image selon les paramètres JSON"""
-        logger.debug(f"🧪 Validation qualité image (cible: {self.intensity_target})...")
+    def _validate_and_correct_image(self) -> bool:
+        """Validation avec correction automatique itérative"""
+        logger.info("🔬 Validation et correction automatique...")
         
-        # Plusieurs tentatives avec attente progressive
-        for attempt in range(5):
-            try:
+        for attempt in range(self.max_correction_attempts):
+            logger.debug(f"🧪 Tentative {attempt + 1}/{self.max_correction_attempts}")
+            
+            # Test de capture multiple
+            intensities = []
+            for i in range(5):
                 ret, frame = self.cap.read()
-                
-                if not ret or frame is None:
-                    logger.debug(f"⚠️ Tentative {attempt+1}: Pas de frame")
-                    time.sleep(0.2)
-                    continue
-                
-                # Analyse de l'intensité
-                mean_intensity = np.mean(frame)
-                min_val = np.min(frame)
-                max_val = np.max(frame)
-                
-                logger.debug(f"📊 Tentative {attempt+1}: Intensité={mean_intensity:.1f}, Min/Max={min_val}/{max_val}")
-                
-                # Diagnostic basé sur la cible configurable
-                if mean_intensity < (self.intensity_target * 0.2):  # Moins de 20% de la cible
-                    logger.warning(f"⚠️ Image très sombre (intensité: {mean_intensity:.1f}, cible: {self.intensity_target})")
-                    if attempt < 4 and self.emergency_boost:  # Boost d'urgence si activé en config
-                        logger.debug("🚨 Boost d'urgence activé...")
-                        self._apply_emergency_boost()
-                        time.sleep(0.5)
-                        continue
-                elif mean_intensity < (self.intensity_target * 0.5):  # Moins de 50% de la cible
-                    logger.info(f"⚠️ Image sombre (intensité: {mean_intensity:.1f}, cible: {self.intensity_target})")
+                if ret and frame is not None:
+                    intensity = np.mean(frame)
+                    intensities.append(intensity)
+                    logger.debug(f"   Capture {i+1}: intensité {intensity:.1f}")
                 else:
-                    logger.info(f"✅ Image correcte (intensité: {mean_intensity:.1f}, cible: {self.intensity_target})")
+                    logger.debug(f"   Capture {i+1}: ÉCHEC")
+                time.sleep(0.2)
+            
+            if not intensities:
+                logger.warning("❌ Aucune capture réussie")
+                continue
+            
+            avg_intensity = np.mean(intensities)
+            logger.info(f"📊 Intensité moyenne tentative {attempt + 1}: {avg_intensity:.1f}")
+            
+            # Critères de validation
+            if avg_intensity >= self.intensity_target:
+                logger.info(f"✅ Validation réussie (intensité: {avg_intensity:.1f})")
+                return True
+            elif avg_intensity >= (self.intensity_target * 0.3):
+                logger.info(f"⚠️ Intensité acceptable (intensité: {avg_intensity:.1f})")
+                return True
+            else:
+                logger.warning(f"⚠️ Intensité insuffisante: {avg_intensity:.1f}")
                 
-                return mean_intensity >= (self.intensity_target * 0.3)  # Au moins 30% de la cible
-                
-            except Exception as e:
-                logger.error(f"❌ Erreur validation tentative {attempt+1}: {e}")
-                if attempt < 4:
-                    time.sleep(0.2)
-                    continue
-                else:
-                    return False
+                # Correction progressive
+                if attempt < self.max_correction_attempts - 1:
+                    self._apply_progressive_correction(attempt + 1)
         
-        logger.warning("⚠️ Validation échouée après 5 tentatives")
+        logger.warning("⚠️ Validation finale échouée après toutes les tentatives")
         return False
     
-    def _apply_emergency_boost(self):
-        """Applique un boost d'urgence configurable depuis JSON"""
-        if not self.emergency_boost:
-            return
+    def _apply_progressive_correction(self, attempt: int):
+        """Applique une correction progressive selon la tentative"""
+        logger.debug(f"🔧 Correction progressive #{attempt}...")
         
-        try:
-            # Paramètres d'urgence - Configurables via JSON
-            emergency_brightness = self.config.get('emergency_brightness', 200)  # Plus élevé
-            emergency_contrast = self.config.get('emergency_contrast', 90)       # Plus élevé
-            emergency_gain = self.config.get('emergency_gain', 50)               # Plus élevé
-            emergency_exposure = self.config.get('emergency_exposure', -3)       # Plus élevé
+        if attempt == 1:
+            # Tentative 1: Gain plus élevé
+            logger.debug("📈 Augmentation gain...")
+            self.cap.set(cv2.CAP_PROP_GAIN, self.gain * 1.5)
             
-            logger.debug(f"🚨 Boost d'urgence: luminosité={emergency_brightness}, contraste={emergency_contrast}")
-            
-            # Application des paramètres d'urgence
-            self.cap.set(cv2.CAP_PROP_BRIGHTNESS, emergency_brightness / 255.0)
-            self.cap.set(cv2.CAP_PROP_CONTRAST, emergency_contrast / 100.0)
-            self.cap.set(cv2.CAP_PROP_GAIN, emergency_gain)
-            
-            # Forcer exposition manuelle pour le boost
+        elif attempt == 2:
+            # Tentative 2: Exposition manuelle
+            logger.debug("📸 Passage exposition manuelle...")
             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
-            self.cap.set(cv2.CAP_PROP_EXPOSURE, emergency_exposure)
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
             
+        elif attempt == 3:
+            # Tentative 3: Exposition encore plus élevée
+            logger.debug("📸 Exposition maximale...")
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure + 1)
+            self.cap.set(cv2.CAP_PROP_GAIN, self.gain * 2)
+            
+        elif attempt == 4:
+            # Tentative 4: Configuration d'urgence
+            logger.debug("🚨 Configuration d'urgence...")
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+            self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 1.0)
+            self.cap.set(cv2.CAP_PROP_CONTRAST, 1.0)
+            self.cap.set(cv2.CAP_PROP_GAIN, 255)  # Gain maximum
+        
+        # Attente après chaque correction
+        time.sleep(1.0)
+    
+    def _log_applied_parameters(self):
+        """Affiche les paramètres réellement appliqués"""
+        try:
+            params = {
+                'Largeur': int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                'Hauteur': int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                'FPS': self.cap.get(cv2.CAP_PROP_FPS),
+                'Luminosité': self.cap.get(cv2.CAP_PROP_BRIGHTNESS),
+                'Contraste': self.cap.get(cv2.CAP_PROP_CONTRAST),
+                'Gain': self.cap.get(cv2.CAP_PROP_GAIN),
+                'Exposition': self.cap.get(cv2.CAP_PROP_EXPOSURE),
+                'Auto-exposition': self.cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+            }
+            
+            logger.info("📊 Paramètres appliqués:")
+            for name, value in params.items():
+                logger.debug(f"   {name}: {value}")
+                
         except Exception as e:
-            logger.warning(f"⚠️ Échec boost d'urgence: {e}")
+            logger.warning(f"⚠️ Impossible de lire les paramètres: {e}")
     
     def get_frame(self) -> Optional[np.ndarray]:
-        """Capture une frame avec diagnostic optionnel"""
+        """Capture une frame avec diagnostic"""
         if not self.is_open or not self.cap:
             return None
         
         try:
             ret, frame = self.cap.read()
             if ret and frame is not None:
-                # Diagnostic optionnel selon config
+                # Diagnostic léger
                 if self.config.get('debug_intensity', False):
                     intensity = np.mean(frame)
                     if intensity < self.intensity_target * 0.5:
-                        logger.debug(f"⚠️ Frame sombre: intensité {intensity:.1f} (cible: {self.intensity_target})")
+                        logger.debug(f"⚠️ Frame sombre: {intensity:.1f}")
                 
                 return frame
             else:
+                logger.debug("❌ Échec capture frame")
                 return None
                 
         except Exception as e:
-            logger.error(f"❌ Erreur capture frame: {e}")
+            logger.error(f"❌ Erreur capture: {e}")
             return None
     
+    def validate_current_stream(self) -> Dict[str, Any]:
+        """Valide le flux actuel et retourne des statistiques"""
+        if not self.is_open:
+            return {'status': 'closed'}
+        
+        logger.info("🔬 Validation flux actuel...")
+        
+        try:
+            # Test sur 10 frames
+            results = []
+            for i in range(10):
+                ret, frame = self.cap.read()
+                if ret and frame is not None:
+                    intensity = np.mean(frame)
+                    min_val = np.min(frame)
+                    max_val = np.max(frame)
+                    std_dev = np.std(frame)
+                    
+                    results.append({
+                        'intensity': intensity,
+                        'min': min_val,
+                        'max': max_val,
+                        'std': std_dev,
+                        'shape': frame.shape
+                    })
+                
+                time.sleep(0.1)
+            
+            if not results:
+                return {'status': 'no_frames'}
+            
+            # Calcul des statistiques
+            avg_intensity = np.mean([r['intensity'] for r in results])
+            min_intensity = min([r['intensity'] for r in results])
+            max_intensity = max([r['intensity'] for r in results])
+            avg_std = np.mean([r['std'] for r in results])
+            
+            # Classification
+            if avg_intensity < 1.0:
+                status = 'black'
+            elif avg_intensity < self.intensity_target * 0.3:
+                status = 'very_dark'
+            elif avg_intensity < self.intensity_target * 0.7:
+                status = 'dark'
+            else:
+                status = 'good'
+            
+            validation = {
+                'status': status,
+                'avg_intensity': avg_intensity,
+                'min_intensity': min_intensity,
+                'max_intensity': max_intensity,
+                'intensity_range': max_intensity - min_intensity,
+                'avg_std_dev': avg_std,
+                'frame_count': len(results),
+                'target_intensity': self.intensity_target,
+                'shape': results[0]['shape'] if results else None
+            }
+            
+            logger.info(f"📊 Validation: {status}, intensité moyenne: {avg_intensity:.1f}")
+            return validation
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur validation: {e}")
+            return {'status': 'error', 'error': str(e)}
+    
     def start_streaming(self) -> bool:
-        """Démarre le streaming en arrière-plan"""
+        """Démarre le streaming avec validation"""
         if self.is_streaming:
             return True
         
@@ -301,6 +356,13 @@ class USB3CameraDriver:
             return False
         
         try:
+            # Validation avant streaming
+            validation = self.validate_current_stream()
+            if validation['status'] in ['black', 'error']:
+                logger.warning(f"⚠️ Flux problématique: {validation['status']}")
+                # Tentative de correction
+                self._apply_progressive_correction(1)
+            
             self.streaming_stop_event.clear()
             self.streaming_thread = Thread(target=self._streaming_loop, daemon=True)
             self.streaming_thread.start()
@@ -327,13 +389,21 @@ class USB3CameraDriver:
         logger.info("⏹️ Streaming USB3 arrêté")
     
     def _streaming_loop(self):
-        """Boucle de streaming en arrière-plan"""
+        """Boucle de streaming optimisée"""
+        frame_count = 0
+        
         while not self.streaming_stop_event.is_set():
             frame = self.get_frame()
             
             if frame is not None:
                 with self.frame_lock:
                     self.latest_frame = frame.copy()
+                frame_count += 1
+                
+                # Log périodique de diagnostic
+                if frame_count % 300 == 0:  # Toutes les 10s environ
+                    intensity = np.mean(frame)
+                    logger.debug(f"🎬 Frame {frame_count}: intensité {intensity:.1f}")
             
             time.sleep(1.0 / self.fps)
     
@@ -355,7 +425,7 @@ class USB3CameraDriver:
         logger.info(f"🔒 Caméra USB3 {self.device_id} fermée")
     
     def get_info(self) -> Dict[str, Any]:
-        """Retourne les informations de la caméra"""
+        """Retourne les informations complètes de la caméra"""
         if not self.is_open:
             return {
                 'device_id': self.device_id,
@@ -364,6 +434,9 @@ class USB3CameraDriver:
                 'height': 0,
                 'fps': 0
             }
+        
+        # Validation temps réel
+        validation = self.validate_current_stream()
         
         return {
             'device_id': self.device_id,
@@ -376,30 +449,44 @@ class USB3CameraDriver:
             'contrast': self.cap.get(cv2.CAP_PROP_CONTRAST),
             'exposure': self.cap.get(cv2.CAP_PROP_EXPOSURE),
             'gain': self.cap.get(cv2.CAP_PROP_GAIN),
-            'configured_intensity_target': self.intensity_target
+            'validation': validation,
+            'intensity_target': self.intensity_target
         }
     
-    def reconfigure(self, new_config: Dict[str, Any]):
-        """Reconfiguration dynamique depuis JSON"""
-        logger.info("🔄 Reconfiguration dynamique des paramètres...")
+    def reconfigure_for_brightness(self):
+        """Reconfiguration spéciale pour corriger la luminosité"""
+        if not self.is_open:
+            return False
         
-        # Mise à jour de la config interne
-        self.config.update(new_config)
+        logger.info("🔧 Reconfiguration spéciale luminosité...")
         
-        # Re-lecture des paramètres
-        self.brightness = self.config.get('brightness', self.brightness)
-        self.contrast = self.config.get('contrast', self.contrast)
-        self.saturation = self.config.get('saturation', self.saturation)
-        self.gain = self.config.get('gain', self.gain)
-        self.exposure = self.config.get('exposure', self.exposure)
-        self.auto_exposure = self.config.get('auto_exposure', self.auto_exposure)
-        self.intensity_target = self.config.get('intensity_target', self.intensity_target)
+        # Configuration d'urgence
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        time.sleep(1.0)
         
-        # Re-application si caméra ouverte
-        if self.is_open:
-            self._configure_camera_from_json()
-            logger.info("✅ Reconfiguration appliquée")
+        # Test après auto-exposition
+        ret, frame = self.cap.read()
+        if ret and frame is not None:
+            intensity = np.mean(frame)
+            logger.info(f"📊 Intensité après auto-exposition: {intensity:.1f}")
+            
+            if intensity < 10.0:
+                # Forcer exposition manuelle
+                logger.info("🔧 Passage exposition manuelle d'urgence...")
+                self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, 0)  # Exposition maximale
+                self.cap.set(cv2.CAP_PROP_GAIN, 255)
+                time.sleep(1.0)
+                
+                # Test final
+                ret, frame = self.cap.read()
+                if ret and frame is not None:
+                    final_intensity = np.mean(frame)
+                    logger.info(f"📊 Intensité finale: {final_intensity:.1f}")
+                    return final_intensity > 5.0
         
+        return False
+    
     def __enter__(self):
         """Context manager entry"""
         self.open()
@@ -409,22 +496,22 @@ class USB3CameraDriver:
         """Context manager exit"""
         self.close()
 
-# Fonctions utilitaires
+# Fonctions utilitaires améliorées
 def list_available_cameras() -> List[Dict[str, Any]]:
-    """Liste toutes les caméras USB disponibles"""
+    """Liste toutes les caméras USB avec validation"""
     cameras = []
     
-    # Test des indices 0 à 5
     for device_id in range(6):
         cap = cv2.VideoCapture(device_id)
         
         if cap.isOpened():
             ret, frame = cap.read()
             
-            if ret:
+            if ret and frame is not None:
                 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 fps = cap.get(cv2.CAP_PROP_FPS)
+                intensity = np.mean(frame)
                 
                 cameras.append({
                     'device_id': device_id,
@@ -432,6 +519,8 @@ def list_available_cameras() -> List[Dict[str, Any]]:
                     'width': width,
                     'height': height,
                     'fps': fps,
+                    'intensity': intensity,
+                    'status': 'good' if intensity > 10 else 'dark',
                     'type': 'USB3'
                 })
         
@@ -440,15 +529,17 @@ def list_available_cameras() -> List[Dict[str, Any]]:
     logger.info(f"🔍 {len(cameras)} caméra(s) USB détectée(s)")
     return cameras
 
-def test_camera(device_id: int, duration: float = 3.0) -> bool:
-    """Test rapide d'une caméra USB"""
+def test_camera(device_id: int, duration: float = 5.0) -> bool:
+    """Test complet d'une caméra USB avec diagnostic"""
     config = {
-        'auto_exposure': False,
-        'exposure': -4,
-        'gain': 30,
-        'brightness': 150,
-        'contrast': 80,
-        'intensity_target': 40.0
+        'auto_exposure': True,
+        'exposure': -1,
+        'gain': 100,
+        'brightness': 255,
+        'contrast': 100,
+        'intensity_target': 30.0,
+        'stabilization_delay': 2.0,
+        'max_correction_attempts': 3
     }
     
     try:
@@ -456,17 +547,29 @@ def test_camera(device_id: int, duration: float = 3.0) -> bool:
             if not camera.is_open:
                 return False
             
+            # Validation initiale
+            validation = camera.validate_current_stream()
+            logger.info(f"📊 Validation initiale: {validation.get('status', 'unknown')}")
+            
+            # Test streaming
             start_time = time.time()
             frame_count = 0
+            good_frames = 0
             
             while time.time() - start_time < duration:
                 frame = camera.get_frame()
                 if frame is not None:
                     frame_count += 1
+                    intensity = np.mean(frame)
+                    if intensity > 10:
+                        good_frames += 1
                 time.sleep(0.1)
             
             fps_measured = frame_count / duration
-            return fps_measured > 10
+            success_rate = good_frames / frame_count if frame_count > 0 else 0
+            
+            logger.info(f"📊 Test: {frame_count} frames, {fps_measured:.1f} FPS, {success_rate:.1%} bonnes frames")
+            return success_rate > 0.5 and fps_measured > 5
             
     except Exception as e:
         logger.error(f"❌ Test échoué: {e}")
