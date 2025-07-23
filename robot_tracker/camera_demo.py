@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 camera_demo.py - Robot_Tracker/robot_tracker/camera_demo.py
-Démo rapide pour tester l'intégration des caméras - Version 1.1
+Démo rapide pour tester l'intégration des caméras - Version 1.2
 Modification: Correction des chemins de fichiers pour détection correcte
 """
 
@@ -201,15 +201,15 @@ class CameraDemoWindow(QMainWindow):
         self.main_layout.addWidget(error_widget)
         self.status_bar.showMessage("❌ Erreur - Vérifiez la structure des fichiers")
     
-    def _on_camera_selected(self, camera_info):
+    def _on_camera_selected(self, camera_alias: str):
         """Gère la sélection d'une caméra"""
-        camera_name = camera_info.get('name', 'Caméra inconnue')
-        self.status_bar.showMessage(f"📷 Caméra sélectionnée: {camera_name}")
-        print(f"📷 Caméra sélectionnée: {camera_name}")
+        self.status_bar.showMessage(f"📷 Caméra sélectionnée: {camera_alias}")
+        print(f"📷 Caméra sélectionnée: {camera_alias}")
     
-    def _on_frame_captured(self, frame_data):
+    def _on_frame_captured(self, alias: str, frame_data: dict):
         """Gère la capture d'une frame"""
-        self.status_bar.showMessage("📸 Frame capturée")
+        self.status_bar.showMessage(f"📸 Frame capturée de {alias}")
+        print(f"📸 Frame capturée de {alias}")
 
 def main():
     """Point d'entrée principal de la démo"""

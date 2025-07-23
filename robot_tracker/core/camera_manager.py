@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/core/camera_manager.py
-Gestionnaire central des caméras USB3 et RealSense - Version 2.1
+Gestionnaire central des caméras USB3 et RealSense - Version 2.2
 Modification: Correction des appels aux méthodes des drivers
 """
 
@@ -15,19 +15,23 @@ from threading import Thread, Lock, Event
 from enum import Enum
 from dataclasses import dataclass
 
-# Import des drivers
+# Import des drivers avec gestion d'erreur améliorée
 try:
-    from ..hardware.usb3_camera_driver import USB3CameraDriver, list_available_cameras
-except ImportError:
     from hardware.usb3_camera_driver import USB3CameraDriver, list_available_cameras
+except ImportError as e:
+    raise ImportError(f"❌ Erreur import USB3CameraDriver: {e}")
 
 logger = logging.getLogger(__name__)
 
+# Import RealSense avec gestion d'erreur robuste
+REALSENSE_AVAILABLE = False
 try:
-    from ..hardware.realsense_driver import RealSenseCamera, list_available_realsense
+    import pyrealsense2 as rs
+    from hardware.realsense_driver import RealSenseCamera, list_available_realsense
     REALSENSE_AVAILABLE = True
-except ImportError:
-    logger.warning("⚠️ RealSense non disponible - installation: pip install pyrealsense2")
+    logger.info("✅ RealSense importé avec succès")
+except ImportError as e:
+    logger.warning(f"⚠️ RealSense non disponible: {e}")
     REALSENSE_AVAILABLE = False
 
 class CameraType(Enum):
@@ -73,27 +77,13 @@ class CameraManager:
         logger.info("🎥 CameraManager initialisé")
     
     def detect_all_cameras(self) -> List[CameraInfo]:
-        """Détecte toutes les caméras disponibles (USB3 + RealSense)"""
+        """Détecte toutes les caméras disponibles (USB3 + RealSense) avec évitement des doublons"""
         logger.info("🔍 Détection globale des caméras...")
         
         all_cameras = []
+        realsense_serials = set()  # Pour éviter les doublons RealSense
         
-        # 1. Caméras USB3
-        try:
-            usb_cameras = list_available_cameras()
-            for cam in usb_cameras:
-                camera_info = CameraInfo(
-                    camera_type=CameraType.USB3_CAMERA,
-                    device_id=cam['device_id'],
-                    name=f"USB3: {cam['name']}",
-                    details=cam
-                )
-                all_cameras.append(camera_info)
-                logger.info(f"✅ USB3 trouvée: {camera_info.name}")
-        except Exception as e:
-            logger.error(f"❌ Erreur détection USB3: {e}")
-        
-        # 2. Caméras RealSense
+        # 1. Détection RealSense en priorité (plus spécifique)
         if REALSENSE_AVAILABLE:
             try:
                 rs_cameras = list_available_realsense()
@@ -105,11 +95,46 @@ class CameraManager:
                         details=cam
                     )
                     all_cameras.append(camera_info)
+                    realsense_serials.add(cam['serial'])
                     logger.info(f"✅ RealSense trouvée: {camera_info.name}")
             except Exception as e:
                 logger.error(f"❌ Erreur détection RealSense: {e}")
         else:
             logger.info("⚠️ RealSense non disponible")
+        
+        # 2. Détection USB3 (en excluant les RealSense déjà détectées)
+        try:
+            usb_cameras = list_available_cameras()
+            usb_count = 0
+            
+            for cam in usb_cameras:
+                # Filtrage des caméras RealSense détectées par OpenCV
+                # Les RealSense apparaissent souvent sous forme de caméra USB générique
+                camera_name = cam['name'].lower()
+                is_likely_realsense = any([
+                    'realsense' in camera_name,
+                    'intel' in camera_name,
+                    # Si on a déjà des RealSense et que c'est une caméra générique
+                    (len(realsense_serials) > 0 and 'usb camera' in camera_name)
+                ])
+                
+                if not is_likely_realsense:
+                    camera_info = CameraInfo(
+                        camera_type=CameraType.USB3_CAMERA,
+                        device_id=cam['device_id'],
+                        name=f"USB3: {cam['name']}",
+                        details=cam
+                    )
+                    all_cameras.append(camera_info)
+                    usb_count += 1
+                    logger.info(f"✅ USB3 trouvée: {camera_info.name}")
+                else:
+                    logger.debug(f"🔄 Caméra USB ignorée (probable RealSense): {cam['name']}")
+            
+            logger.info(f"🔍 {usb_count} caméra(s) USB distincte(s) détectée(s)")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur détection USB3: {e}")
         
         self.available_cameras = all_cameras
         logger.info(f"📷 {len(all_cameras)} caméra(s) détectée(s) au total")
