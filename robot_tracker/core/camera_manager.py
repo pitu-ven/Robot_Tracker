@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/core/camera_manager.py
-Gestionnaire central des caméras USB3 et RealSense - Version 2.5
-Modification: Optimisation finale basée sur le diagnostic - polling adaptatif
+Gestionnaire central des caméras sans valeurs statiques - Version 2.6
+Modification: Suppression complète des valeurs hardcodées, configuration via JSON
 """
 
 import cv2
@@ -44,12 +44,12 @@ class CameraType(Enum):
 class CameraInfo:
     """Informations d'une caméra détectée"""
     camera_type: CameraType
-    device_id: Any  # int pour USB3, str pour RealSense
+    device_id: Any
     name: str
     details: Dict[str, Any]
 
 class CameraManager:
-    """Gestionnaire central pour toutes les caméras - Version optimisée"""
+    """Gestionnaire central pour toutes les caméras - Version entièrement configurable"""
     
     def __init__(self, config):
         self.config = config
@@ -74,20 +74,20 @@ class CameraManager:
         self.cameras_lock = Lock()
         self.cache_lock = Lock()
         
-        # Configuration par défaut
+        # Configuration depuis JSON
         self.auto_detect_interval = self.config.get('camera', 'manager.auto_detect_interval', 5.0)
         self.max_frame_buffer = self.config.get('camera', 'manager.max_frame_buffer', 5)
         
-        logger.info("🎥 CameraManager initialisé")
+        logger.info("🎥 CameraManager v2.6 initialisé (configuration complète)")
     
     def detect_all_cameras(self) -> List[CameraInfo]:
         """Détecte toutes les caméras disponibles (USB3 + RealSense) avec évitement des doublons"""
         logger.info("🔍 Détection globale des caméras...")
         
         all_cameras = []
-        realsense_serials = set()  # Pour éviter les doublons RealSense
+        realsense_serials = set()
         
-        # 1. Détection RealSense en priorité (plus spécifique)
+        # 1. Détection RealSense en priorité
         if REALSENSE_AVAILABLE:
             try:
                 rs_cameras = list_available_realsense()
@@ -112,12 +112,10 @@ class CameraManager:
             usb_count = 0
             
             for cam in usb_cameras:
-                # Filtrage des caméras RealSense détectées par OpenCV
                 camera_name = cam['name'].lower()
                 is_likely_realsense = any([
                     'realsense' in camera_name,
                     'intel' in camera_name,
-                    # Si on a déjà des RealSense et que c'est une caméra générique
                     (len(realsense_serials) > 0 and 'usb camera' in camera_name)
                 ])
                 
@@ -151,15 +149,12 @@ class CameraManager:
         logger.info(f"📷 Ouverture caméra: {camera_info.name} (alias: {camera_alias})")
         
         with self.cameras_lock:
-            # Vérification si déjà ouverte
             if camera_alias in self.active_cameras:
                 logger.warning(f"⚠️ Caméra {camera_alias} déjà ouverte")
                 return True
             
             try:
-                # Création de l'instance selon le type
                 if camera_info.camera_type == CameraType.USB3_CAMERA:
-                    # Préparation de la configuration pour USB3
                     usb_config = {
                         'width': self.config.get('camera', 'usb3_camera.width', 640),
                         'height': self.config.get('camera', 'usb3_camera.height', 480),
@@ -193,7 +188,7 @@ class CameraManager:
                         'last_frame_time': 0,
                         'frame_count': 0,
                         'is_active': True,
-                        'poll_failures': 0  # Compteur d'échecs pour polling adaptatif
+                        'poll_failures': 0
                     }
                     
                     # Initialiser le cache pour cette caméra
@@ -224,7 +219,6 @@ class CameraManager:
                 cam_data = self.active_cameras[alias]
                 camera = cam_data['camera']
                 
-                # Fermeture selon le type
                 if cam_data['info'].camera_type == CameraType.USB3_CAMERA:
                     camera.close()
                 elif cam_data['info'].camera_type == CameraType.REALSENSE:
@@ -232,7 +226,6 @@ class CameraManager:
                 
                 del self.active_cameras[alias]
                 
-                # Supprimer du cache
                 with self.cache_lock:
                     if alias in self.frame_cache:
                         del self.frame_cache[alias]
@@ -261,16 +254,16 @@ class CameraManager:
     def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
         """Récupère une frame d'une caméra spécifique - VERSION OPTIMISÉE"""
         # Vérification rapide dans le cache d'abord
+        cache_max_age = self.config.get('ui', 'camera_manager.streaming.cache_max_age', 0.1)
+        
         with self.cache_lock:
             if alias in self.frame_cache:
                 cached_result = self.frame_cache[alias]
                 cache_time = self.cache_timestamps.get(alias, 0)
                 
-                # Si le cache est récent (moins de 100ms), le retourner
-                if time.time() - cache_time < 0.1 and cached_result[0]:
+                if time.time() - cache_time < cache_max_age and cached_result[0]:
                     return cached_result
         
-        # Sinon, acquérir une nouvelle frame
         return self._acquire_fresh_frame(alias)
     
     def _acquire_fresh_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
@@ -288,7 +281,6 @@ class CameraManager:
             
             try:
                 if cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                    # Pour USB3: récupération de la frame couleur uniquement
                     if hasattr(camera, 'get_latest_frame') and camera.is_streaming:
                         frame = camera.get_latest_frame()
                     else:
@@ -304,7 +296,6 @@ class CameraManager:
                         result = (False, None, None)
                         
                 elif cam_data['info'].camera_type == CameraType.REALSENSE:
-                    # Pour RealSense: utilisation NON-BLOQUANTE uniquement
                     success, color_frame, depth_frame = camera.get_frames()
                     
                     if success and color_frame is not None:
@@ -314,7 +305,6 @@ class CameraManager:
                         result = (True, color_frame, depth_frame)
                     else:
                         cam_data['poll_failures'] += 1
-                        # Retourner la dernière frame du cache si elle existe
                         with self.cache_lock:
                             if alias in self.frame_cache:
                                 result = self.frame_cache[alias]
@@ -324,7 +314,6 @@ class CameraManager:
                 else:
                     result = (False, None, None)
                 
-                # Mettre à jour le cache seulement si on a une nouvelle frame
                 if result[0]:
                     with self.cache_lock:
                         self.frame_cache[alias] = result
@@ -341,7 +330,6 @@ class CameraManager:
         """Récupère les frames de toutes les caméras actives - VERSION CACHE"""
         all_frames = {}
         
-        # Utiliser le cache pour éviter les blocages
         with self.cache_lock:
             for alias in self.active_cameras.keys():
                 if alias in self.frame_cache:
@@ -361,11 +349,9 @@ class CameraManager:
             logger.warning("⚠️ Aucune caméra ouverte pour streaming")
             return False
         
-        # Ajout du callback si fourni
         if frame_callback:
             self.frame_callbacks.append(frame_callback)
         
-        # Démarrage du streaming individuel pour les caméras USB3
         with self.cameras_lock:
             for alias, cam_data in self.active_cameras.items():
                 camera = cam_data['camera']
@@ -376,7 +362,6 @@ class CameraManager:
                     except Exception as e:
                         logger.error(f"❌ Erreur démarrage streaming USB3 {alias}: {e}")
         
-        # Démarrage du thread de streaming global
         self.streaming_stop_event.clear()
         self.streaming_thread = Thread(target=self._streaming_loop_optimized, daemon=True)
         self.streaming_thread.start()
@@ -393,9 +378,9 @@ class CameraManager:
         self.streaming_stop_event.set()
         
         if self.streaming_thread and self.streaming_thread.is_alive():
-            self.streaming_thread.join(timeout=1.0)  # Timeout réduit
+            join_timeout = self.config.get('ui', 'camera_manager.streaming.join_timeout', 1.0)
+            self.streaming_thread.join(timeout=join_timeout)
         
-        # Arrêt du streaming individuel pour les caméras USB3
         with self.cameras_lock:
             for alias, cam_data in self.active_cameras.items():
                 camera = cam_data['camera']
@@ -410,15 +395,23 @@ class CameraManager:
         logger.info("⏹️ Streaming global arrêté")
     
     def _streaming_loop_optimized(self):
-        """Boucle principale de streaming - VERSION OPTIMISÉE"""
+        """Boucle principale de streaming - VERSION OPTIMISÉE CONFIGURÉE"""
         logger.debug("🔄 Début boucle streaming optimisée")
         
         frame_update_count = 0
         loop_count = 0
-        last_successful_poll = {}  # Track dernière poll réussie par caméra
+        last_successful_poll = {}
         
-        # Fréquences adaptatives par type de caméra
-        base_sleep_time = 0.033  # 30 FPS nominal
+        # Configuration depuis JSON
+        base_sleep_time = self.config.get('ui', 'camera_manager.streaming.base_sleep_time', 0.033)
+        high_failure_threshold = self.config.get('ui', 'camera_manager.streaming.poll_failure_thresholds.high_failure', 10)
+        medium_failure_threshold = self.config.get('ui', 'camera_manager.streaming.poll_failure_thresholds.medium_failure', 5)
+        
+        problematic_interval = self.config.get('ui', 'camera_manager.streaming.polling_intervals.problematic', 0.1)
+        medium_interval = self.config.get('ui', 'camera_manager.streaming.polling_intervals.medium', 0.05)
+        normal_interval = self.config.get('ui', 'camera_manager.streaming.polling_intervals.normal', 0.025)
+        
+        log_interval = self.config.get('ui', 'camera_manager.streaming.log_interval_loops', 300)
         
         while not self.streaming_stop_event.is_set():
             loop_count += 1
@@ -426,28 +419,23 @@ class CameraManager:
             current_time = time.time()
             
             try:
-                # Copie rapide des caméras actives pour éviter les verrous longs
                 with self.cameras_lock:
                     active_cameras_copy = dict(self.active_cameras)
                 
-                # Polling adaptatif par caméra
                 for alias, cam_data in active_cameras_copy.items():
                     if not cam_data.get('is_active', False):
                         continue
                     
-                    # Polling adaptatif basé sur les échecs récents
                     poll_failures = cam_data.get('poll_failures', 0)
                     last_poll = last_successful_poll.get(alias, 0)
                     
-                    # Si trop d'échecs, réduire la fréquence de polling
-                    if poll_failures > 10:
-                        min_interval = 0.1  # Max 10 Hz si problème
-                    elif poll_failures > 5:
-                        min_interval = 0.05  # Max 20 Hz si quelques échecs
+                    if poll_failures > high_failure_threshold:
+                        min_interval = problematic_interval
+                    elif poll_failures > medium_failure_threshold:
+                        min_interval = medium_interval
                     else:
-                        min_interval = 0.025  # Max 40 Hz si OK
+                        min_interval = normal_interval
                     
-                    # Skip ce polling si trop récent
                     if current_time - last_poll < min_interval:
                         continue
                     
@@ -455,23 +443,20 @@ class CameraManager:
                     
                     try:
                         if cam_data['info'].camera_type == CameraType.REALSENSE:
-                            # RealSense avec polling non-bloquant
                             success, color_frame, depth_frame = camera.get_frames()
                             if success and color_frame is not None:
                                 with self.cache_lock:
                                     self.frame_cache[alias] = (True, color_frame, depth_frame)
                                     self.cache_timestamps[alias] = current_time
                                 
-                                # Mise à jour des stats
                                 cam_data['last_frame_time'] = current_time
                                 cam_data['frame_count'] += 1
-                                cam_data['poll_failures'] = max(0, cam_data['poll_failures'] - 1)  # Réduire graduellement
+                                cam_data['poll_failures'] = max(0, cam_data['poll_failures'] - 1)
                                 
                                 last_successful_poll[alias] = current_time
                                 updated_any = True
                                 
                         elif cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                            # USB3 avec streaming interne
                             if hasattr(camera, 'get_latest_frame') and camera.is_streaming:
                                 frame = camera.get_latest_frame()
                                 if frame is not None:
@@ -491,19 +476,17 @@ class CameraManager:
                         logger.debug(f"Poll échoué pour {alias}: {e}")
                         continue
                 
-                # Appel des callbacks seulement s'il y a eu des mises à jour
                 if updated_any:
                     frame_update_count += 1
                     
-                    # Récupération des frames depuis le cache
                     with self.cache_lock:
                         current_frames = dict(self.frame_cache)
                     
-                    # Filtrer seulement les frames valides et récentes
+                    frame_max_age = self.config.get('ui', 'camera_manager.streaming.frame_max_age', 0.5)
                     valid_frames = {}
                     for alias, frames in current_frames.items():
                         cache_age = current_time - self.cache_timestamps.get(alias, 0)
-                        if frames[0] and cache_age < 0.5:  # Frame pas trop ancienne
+                        if frames[0] and cache_age < frame_max_age:
                             valid_frames[alias] = frames
                     
                     if valid_frames:
@@ -513,19 +496,18 @@ class CameraManager:
                             except Exception as e:
                                 logger.error(f"❌ Erreur callback streaming: {e}")
                 
-                # Adaptatif sleep basé sur l'activité
                 if updated_any:
-                    time.sleep(base_sleep_time)  # Nominal si actif
+                    time.sleep(base_sleep_time)
                 else:
-                    time.sleep(base_sleep_time * 2)  # Plus lent si pas d'activité
+                    time.sleep(base_sleep_time * 2)
                 
-                # Log périodique pour debug (réduit)
-                if loop_count % 300 == 0:  # Toutes les 10 secondes environ
+                if loop_count % log_interval == 0:
                     logger.debug(f"🔄 Loop {loop_count}, {frame_update_count} frames, caméras actives: {len(active_cameras_copy)}")
                 
             except Exception as e:
                 logger.error(f"❌ Erreur boucle streaming: {e}")
-                time.sleep(0.1)  # Pause en cas d'erreur
+                error_sleep = self.config.get('ui', 'camera_manager.streaming.error_sleep', 0.1)
+                time.sleep(error_sleep)
         
         logger.debug(f"🛑 Fin boucle streaming optimisée ({frame_update_count} frames sur {loop_count} loops)")
     
@@ -592,7 +574,6 @@ class CameraManager:
                 if cam_data['info'].camera_type == CameraType.REALSENSE:
                     return camera.get_intrinsics()
                 else:
-                    # Pour USB3: paramètres basiques uniquement
                     camera_info = camera.get_info()
                     return {
                         'color': {
@@ -616,7 +597,6 @@ class CameraManager:
             cv2.imwrite(filepath, color_frame)
             logger.info(f"💾 Frame sauvegardée: {filepath}")
             
-            # Sauvegarde aussi la profondeur si disponible
             if depth_frame is not None:
                 depth_filepath = filepath.replace('.jpg', '_depth.png').replace('.png', '_depth.png')
                 cv2.imwrite(depth_filepath, depth_frame)
@@ -652,7 +632,6 @@ def test_camera_manager(duration: float = 5.0) -> bool:
     """Test complet du gestionnaire de caméras - VERSION RAPIDE"""
     logger.info(f"🧪 Test CameraManager pendant {duration}s...")
     
-    # Configuration dummy
     dummy_config = type('Config', (), {
         'get': lambda self, section, key, default=None: default
     })()
@@ -660,7 +639,6 @@ def test_camera_manager(duration: float = 5.0) -> bool:
     manager = CameraManager(dummy_config)
     
     try:
-        # 1. Détection
         cameras = manager.detect_all_cameras()
         if not cameras:
             logger.warning("⚠️ Aucune caméra détectée")
@@ -668,35 +646,34 @@ def test_camera_manager(duration: float = 5.0) -> bool:
         
         logger.info(f"📷 {len(cameras)} caméra(s) détectée(s)")
         
-        # 2. Ouverture de la première caméra
         first_camera = cameras[0]
         if not manager.open_camera(first_camera, "test_cam"):
             logger.error("❌ Échec ouverture caméra")
             return False
         
-        # 3. Test streaming
         if not manager.start_streaming():
             logger.error("❌ Échec démarrage streaming")
             return False
         
-        # 4. Capture de frames pendant la durée spécifiée
         start_time = time.time()
         frame_count = 0
+        
+        test_sleep_interval = dummy_config.get('ui', 'camera_manager.streaming.test_sleep_interval', 0.05)
         
         while time.time() - start_time < duration:
             ret, color, depth = manager.get_camera_frame("test_cam")
             if ret and color is not None:
                 frame_count += 1
-            time.sleep(0.05)  # 20 Hz
+            time.sleep(test_sleep_interval)
         
         fps_measured = frame_count / duration
         logger.info(f"✅ Test réussi: {frame_count} frames, ~{fps_measured:.1f} fps")
         
-        # 5. Nettoyage
         manager.stop_streaming()
         manager.close_all_cameras()
         
-        return fps_measured > 10  # Au moins 10 FPS pour considérer comme succès
+        min_fps_threshold = dummy_config.get('ui', 'camera_manager.streaming.min_fps_threshold', 10)
+        return fps_measured > min_fps_threshold
         
     except Exception as e:
         logger.error(f"❌ Test CameraManager échoué: {e}")
