@@ -1,0 +1,87 @@
+{
+  "realsense": {
+    "enabled": true,
+    "version": "2.4",
+    "device_serial": null,
+    "color_width": 640,
+    "color_height": 480,
+    "color_fps": 30,
+    "depth_width": 640,
+    "depth_height": 480,
+    "depth_fps": 30,
+    "enable_infrared": false,
+    "enable_filters": true,
+    "enable_align": true,
+    "spatial_magnitude": 2.0,
+    "spatial_smooth_alpha": 0.5,
+    "temporal_smooth_alpha": 0.4,
+    "test_attempts": 5,
+    "test_timeout": 1000,
+    "test_sleep": 0.1,
+    "default_depth_scale": 0.001
+  },
+  "usb3_camera": {
+    "enabled": true,
+    "version_info": "1.6",
+    "device_id": 0,
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "buffer_size": 1,
+    "auto_exposure": true,
+    "exposure": -6,
+    "gain": 0,
+    "brightness": 255,
+    "contrast": 100,
+    "saturation": 100,
+    "stabilization_delay": 2.0,
+    "intensity_target": 30.0,
+    "max_correction_attempts": 5,
+    "force_manual_exposure": true,
+    "validation": {
+      "test_frames": 5,
+      "test_delay": 0.2,
+      "min_acceptable_ratio": 0.3,
+      "stream_frames": 10,
+      "stream_delay": 0.1
+    },
+    "correction": {
+      "gain_multiplier_1": 1.5,
+      "gain_multiplier_2": 2.0,
+      "emergency_gain": 255,
+      "delay": 1.0
+    },
+    "classification": {
+      "very_low_threshold": 1.0,
+      "low_threshold_ratio": 0.3,
+      "medium_threshold_ratio": 0.7
+    },
+    "streaming": {
+      "problematic_statuses": [
+        "black",
+        "error"
+      ],
+      "join_timeout": 2.0,
+      "log_interval_frames": 300
+    },
+    "reconfiguration": {
+      "stabilization_delay": 1.0,
+      "brightness_threshold": 10.0,
+      "emergency_gain": 255,
+      "success_threshold": 5.0
+    },
+    "debug": {
+      "intensity": false,
+      "target_ratio": 0.5
+    }
+  },
+  "general": {
+    "preview_fps": 15,
+    "save_images": false,
+    "image_format": "jpg",
+    "timestamp_images": true,
+    "validate_stream_on_open": true,
+    "min_acceptable_intensity": 5.0,
+    "log_frame_diagnostics": false
+  }
+}

@@ -28,5 +28,5 @@ logs/*.log
 reports/*.pdf
 
 # Configuration locale (ne pas versionner)
-config/*_config.json
+# config/*_config.json #On versionne pour l'instant car dev
 !config/default/
