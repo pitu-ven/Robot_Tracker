@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/ui/camera_tab.py
-Onglet de gestion des caméras sans aucune valeur statique - Version 4.2
-Modification: Suppression complète des valeurs hardcodées, configuration 100% JSON
+Onglet de gestion des caméras sans aucune valeur statique - Version 4.3
+Modification: Correction finale des messages d'erreur et valeurs hardcodées
 """
 
 import cv2
@@ -62,7 +62,8 @@ class CameraTab(QWidget):
         self._connect_signals()
         self._detect_cameras()
         
-        logger.info("🎥 CameraTab v4.2 initialisé (zéro valeur statique)")
+        version_number = self.config.get('ui', 'camera_tab.version', '4.3')
+        logger.info(f"🎥 CameraTab v{version_number} initialisé (zéro valeur statique)")
     
     def _init_ui(self):
         """Initialise l'interface utilisateur avec configuration JSON"""
@@ -90,12 +91,14 @@ class CameraTab(QWidget):
         layout = QVBoxLayout(panel)
         
         # === Détection et sélection ===
-        detection_group = QGroupBox("🔍 Détection & Sélection")
+        detection_group_title = self.config.get('ui', 'camera_tab.labels.detection_group', "🔍 Détection & Sélection")
+        detection_group = QGroupBox(detection_group_title)
         detection_layout = QVBoxLayout(detection_group)
         
         # Bouton détection avec taille configurable
         button_height = self.config.get('ui', 'camera_tab.controls.button_height', 35)
-        self.detect_btn = QPushButton("🔄 Détecter caméras")
+        detect_btn_text = self.config.get('ui', 'camera_tab.labels.detect_button', "🔄 Détecter caméras")
+        self.detect_btn = QPushButton(detect_btn_text)
         self.detect_btn.setMinimumHeight(button_height)
         detection_layout.addWidget(self.detect_btn)
         
@@ -103,13 +106,17 @@ class CameraTab(QWidget):
         combo_height = self.config.get('ui', 'camera_tab.controls.combo_height', 30)
         self.camera_combo = QComboBox()
         self.camera_combo.setMinimumHeight(combo_height)
-        detection_layout.addWidget(QLabel("Caméras disponibles:"))
+        
+        combo_label_text = self.config.get('ui', 'camera_tab.labels.available_cameras', "Caméras disponibles:")
+        detection_layout.addWidget(QLabel(combo_label_text))
         detection_layout.addWidget(self.camera_combo)
         
         # Boutons d'action
         btn_layout = QHBoxLayout()
-        self.open_btn = QPushButton("📷 Ouvrir")
-        self.close_btn = QPushButton("❌ Fermer")
+        open_btn_text = self.config.get('ui', 'camera_tab.labels.open_button', "📷 Ouvrir")
+        close_btn_text = self.config.get('ui', 'camera_tab.labels.close_button', "❌ Fermer")
+        self.open_btn = QPushButton(open_btn_text)
+        self.close_btn = QPushButton(close_btn_text)
         self.open_btn.setEnabled(False)
         self.close_btn.setEnabled(False)
         btn_layout.addWidget(self.open_btn)
@@ -119,12 +126,15 @@ class CameraTab(QWidget):
         layout.addWidget(detection_group)
         
         # === Streaming ===
-        streaming_group = QGroupBox("🎬 Streaming")
+        streaming_group_title = self.config.get('ui', 'camera_tab.labels.streaming_group', "🎬 Streaming")
+        streaming_group = QGroupBox(streaming_group_title)
         streaming_layout = QVBoxLayout(streaming_group)
         
         stream_btn_layout = QHBoxLayout()
-        self.start_stream_btn = QPushButton("▶️ Démarrer")
-        self.stop_stream_btn = QPushButton("⏹️ Arrêter")
+        start_btn_text = self.config.get('ui', 'camera_tab.labels.start_button', "▶️ Démarrer")
+        stop_btn_text = self.config.get('ui', 'camera_tab.labels.stop_button', "⏹️ Arrêter")
+        self.start_stream_btn = QPushButton(start_btn_text)
+        self.stop_stream_btn = QPushButton(stop_btn_text)
         self.start_stream_btn.setEnabled(False)
         self.stop_stream_btn.setEnabled(False)
         stream_btn_layout.addWidget(self.start_stream_btn)
@@ -133,23 +143,26 @@ class CameraTab(QWidget):
         
         # Refresh rate avec limites configurables
         fps_layout = QHBoxLayout()
-        fps_layout.addWidget(QLabel("Refresh UI (ms):"))
+        refresh_label_text = self.config.get('ui', 'camera_tab.labels.refresh_rate', "Refresh UI (ms):")
+        fps_layout.addWidget(QLabel(refresh_label_text))
         self.refresh_spinbox = QSpinBox()
         
         refresh_min = self.config.get('ui', 'camera_tab.controls.refresh_rate_min', 16)
         refresh_max = self.config.get('ui', 'camera_tab.controls.refresh_rate_max', 1000)
         refresh_default = self.config.get('ui', 'camera_tab.controls.refresh_rate_default', 50)
+        refresh_suffix = self.config.get('ui', 'camera_tab.labels.refresh_suffix', " ms")
         
         self.refresh_spinbox.setRange(refresh_min, refresh_max)
         self.refresh_spinbox.setValue(refresh_default)
-        self.refresh_spinbox.setSuffix(" ms")
+        self.refresh_spinbox.setSuffix(refresh_suffix)
         fps_layout.addWidget(self.refresh_spinbox)
         streaming_layout.addLayout(fps_layout)
         
         layout.addWidget(streaming_group)
         
         # === Affichage avec vue double ===
-        display_group = QGroupBox("🖼️ Affichage")
+        display_group_title = self.config.get('ui', 'camera_tab.labels.display_group', "🖼️ Affichage")
+        display_group = QGroupBox(display_group_title)
         display_layout = QVBoxLayout(display_group)
         
         # Option vue profondeur
@@ -162,16 +175,18 @@ class CameraTab(QWidget):
         
         # Zoom avec configuration
         zoom_layout = QHBoxLayout()
-        zoom_layout.addWidget(QLabel("Zoom:"))
+        zoom_label_text = self.config.get('ui', 'camera_tab.labels.zoom', "Zoom:")
+        zoom_layout.addWidget(QLabel(zoom_label_text))
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
         
         zoom_min = self.config.get('ui', 'camera_tab.controls.zoom_range_min', 10)
         zoom_max = self.config.get('ui', 'camera_tab.controls.zoom_range_max', 500)
         zoom_default = self.config.get('ui', 'camera_tab.controls.zoom_default', 100)
+        zoom_initial_label = self.config.get('ui', 'camera_tab.labels.zoom_initial', "1.0x")
         
         self.zoom_slider.setRange(zoom_min, zoom_max)
         self.zoom_slider.setValue(zoom_default)
-        self.zoom_label = QLabel("1.0x")
+        self.zoom_label = QLabel(zoom_initial_label)
         zoom_layout.addWidget(self.zoom_slider)
         zoom_layout.addWidget(self.zoom_label)
         display_layout.addLayout(zoom_layout)
@@ -179,13 +194,15 @@ class CameraTab(QWidget):
         # Options d'affichage
         stats_label = self.config.get('ui', 'camera_tab.labels.show_stats', "Afficher statistiques")
         self.show_stats_cb = QCheckBox(stats_label)
-        self.show_stats_cb.setChecked(True)
+        stats_default_checked = self.config.get('ui', 'camera_tab.controls.stats_default_checked', True)
+        self.show_stats_cb.setChecked(stats_default_checked)
         display_layout.addWidget(self.show_stats_cb)
         
         layout.addWidget(display_group)
         
         # === Capture ===
-        capture_group = QGroupBox("📸 Capture")
+        capture_group_title = self.config.get('ui', 'camera_tab.labels.capture_group', "📸 Capture")
+        capture_group = QGroupBox(capture_group_title)
         capture_layout = QVBoxLayout(capture_group)
         
         capture_btn_text = self.config.get('ui', 'camera_tab.labels.capture_frame', "📸 Capturer frame")
@@ -201,7 +218,8 @@ class CameraTab(QWidget):
         layout.addWidget(capture_group)
         
         # === Statistiques ===
-        stats_group = QGroupBox("📊 Statistiques")
+        stats_group_title = self.config.get('ui', 'camera_tab.labels.stats_group', "📊 Statistiques")
+        stats_group = QGroupBox(stats_group_title)
         stats_layout = QVBoxLayout(stats_group)
         
         self.stats_table = QTableWidget()
@@ -218,7 +236,8 @@ class CameraTab(QWidget):
         layout.addWidget(stats_group)
         
         # === Log ===
-        log_group = QGroupBox("📝 Journal")
+        log_group_title = self.config.get('ui', 'camera_tab.labels.log_group', "📝 Journal")
+        log_group = QGroupBox(log_group_title)
         log_layout = QVBoxLayout(log_group)
         
         self.log_text = QTextEdit()
@@ -267,14 +286,17 @@ class CameraTab(QWidget):
         text_color = self.config.get('ui', 'camera_display.colors.text_color', '#666')
         default_border = self.config.get('ui', 'camera_display.colors.default_border', '#ccc')
         background = self.config.get('ui', 'camera_display.colors.background', '#f9f9f9')
+        label_font_size = self.config.get('ui', 'camera_tab.display.default_label_font_size', 14)
+        label_padding = self.config.get('ui', 'camera_tab.display.default_label_padding', 50)
+        label_border_radius = self.config.get('ui', 'camera_tab.display.default_label_border_radius', 10)
         
         label_style = f"""
             QLabel {{
-                font-size: 14px;
+                font-size: {label_font_size}px;
                 color: {text_color};
                 border: 2px dashed {default_border};
-                border-radius: 10px;
-                padding: 50px;
+                border-radius: {label_border_radius}px;
+                padding: {label_padding}px;
                 background-color: {background};
             }}
         """
@@ -330,7 +352,7 @@ class CameraTab(QWidget):
                 
         except Exception as e:
             error_msg = self.config.get('ui', 'camera_tab.messages.detection_error', 
-                                       "❌ Erreur détection: {error}")
+                                       "Erreur détection: {error}")
             self._log(error_msg.format(error=e))
     
     def _camera_selection_changed(self):
@@ -399,7 +421,7 @@ class CameraTab(QWidget):
                 
         except Exception as e:
             error_msg = self.config.get('ui', 'camera_tab.messages.open_error', 
-                                       "❌ Erreur ouverture caméra: {error}")
+                                       "Erreur ouverture caméra: {error}")
             self._log(error_msg.format(error=e))
     
     def _close_selected_camera(self):
@@ -424,12 +446,12 @@ class CameraTab(QWidget):
                 self._log(closed_msg.format(alias=alias))
             else:
                 close_error_msg = self.config.get('ui', 'camera_tab.messages.close_error', 
-                                                 "❌ Erreur fermeture {alias}")
+                                                 "Erreur fermeture {alias}")
                 self._log(close_error_msg.format(alias=alias))
                 
         except Exception as e:
             close_exception_msg = self.config.get('ui', 'camera_tab.messages.close_exception', 
-                                                 "❌ Erreur fermeture caméra {alias}: {error}")
+                                                 "Erreur fermeture caméra {alias}: {error}")
             self._log(close_exception_msg.format(alias=alias, error=e))
     
     def _add_camera_display(self, alias: str, display_widget: CameraDisplayWidget):
@@ -480,14 +502,17 @@ class CameraTab(QWidget):
             text_color = self.config.get('ui', 'camera_display.colors.text_color', '#666')
             default_border = self.config.get('ui', 'camera_display.colors.default_border', '#ccc')
             background = self.config.get('ui', 'camera_display.colors.background', '#f9f9f9')
+            label_font_size = self.config.get('ui', 'camera_tab.display.default_label_font_size', 14)
+            label_padding = self.config.get('ui', 'camera_tab.display.default_label_padding', 50)
+            label_border_radius = self.config.get('ui', 'camera_tab.display.default_label_border_radius', 10)
             
             label_style = f"""
                 QLabel {{
-                    font-size: 14px;
+                    font-size: {label_font_size}px;
                     color: {text_color};
                     border: 2px dashed {default_border};
-                    border-radius: 10px;
-                    padding: 50px;
+                    border-radius: {label_border_radius}px;
+                    padding: {label_padding}px;
                     background-color: {background};
                 }}
             """
@@ -533,7 +558,7 @@ class CameraTab(QWidget):
             
         except Exception as e:
             start_error_msg = self.config.get('ui', 'camera_tab.messages.start_stream_error', 
-                                             "❌ Erreur démarrage streaming: {error}")
+                                             "Erreur démarrage streaming: {error}")
             self._log(start_error_msg.format(error=e))
     
     def _stop_streaming(self):
@@ -560,7 +585,7 @@ class CameraTab(QWidget):
             
         except Exception as e:
             stop_error_msg = self.config.get('ui', 'camera_tab.messages.stop_stream_error', 
-                                            "❌ Erreur arrêt streaming: {error}")
+                                            "Erreur arrêt streaming: {error}")
             self._log(stop_error_msg.format(error=e))
     
     def _on_new_frames(self, frames_data: dict):
@@ -582,7 +607,7 @@ class CameraTab(QWidget):
                     
         except Exception as e:
             frame_error_msg = self.config.get('ui', 'camera_tab.messages.frame_update_error', 
-                                             "❌ Erreur mise à jour frames: {error}")
+                                             "Erreur mise à jour frames: {error}")
             self._log(frame_error_msg.format(error=e))
     
     def _update_statistics(self):
@@ -603,27 +628,47 @@ class CameraTab(QWidget):
                 
         except Exception as e:
             stats_error_msg = self.config.get('ui', 'camera_tab.messages.stats_error', 
-                                             "❌ Erreur mise à jour stats: {error}")
+                                             "Erreur mise à jour stats: {error}")
             self._log(stats_error_msg.format(error=e))
     
     def _display_camera_stats(self, stats: dict):
         """Affiche les statistiques dans le tableau"""
         self.stats_table.setRowCount(0)
         
+        # Labels configurables pour les propriétés
+        name_label = self.config.get('ui', 'camera_tab.statistics.labels.name', "Nom")
+        type_label = self.config.get('ui', 'camera_tab.statistics.labels.type', "Type")
+        resolution_label = self.config.get('ui', 'camera_tab.statistics.labels.resolution', "Résolution")
+        fps_label = self.config.get('ui', 'camera_tab.statistics.labels.fps', "FPS actuel")
+        frames_label = self.config.get('ui', 'camera_tab.statistics.labels.frames', "Frames total")
+        timestamp_label = self.config.get('ui', 'camera_tab.statistics.labels.timestamp', "Dernière frame")
+        status_label = self.config.get('ui', 'camera_tab.statistics.labels.status', "État")
+        
+        # Unités configurables
+        pixels_unit = self.config.get('ui', 'camera_tab.statistics.units.pixels', "pixels")
+        fps_unit = self.config.get('ui', 'camera_tab.statistics.units.fps', "fps")
+        empty_unit = self.config.get('ui', 'camera_tab.statistics.units.empty', "")
+        
+        # Valeurs d'état configurables
+        active_text = self.config.get('ui', 'camera_tab.statistics.values.active', "Actif")
+        inactive_text = self.config.get('ui', 'camera_tab.statistics.values.inactive', "Inactif")
+        na_text = self.config.get('ui', 'camera_tab.statistics.values.na', "N/A")
+        
         display_props = [
-            ("Nom", stats.get('name', 'N/A'), ""),
-            ("Type", stats.get('type', 'N/A'), ""),
-            ("Résolution", stats.get('resolution', stats.get('color_resolution', 'N/A')), "pixels"),
-            ("FPS actuel", f"{stats.get('fps', 0):.1f}", "fps"),
-            ("Frames total", str(stats.get('frame_count', 0)), ""),
-            ("Dernière frame", time.strftime("%H:%M:%S", time.localtime(stats.get('last_timestamp', 0))), ""),
-            ("État", "Actif" if stats.get('is_active', False) else "Inactif", "")
+            (name_label, stats.get('name', na_text), empty_unit),
+            (type_label, stats.get('type', na_text), empty_unit),
+            (resolution_label, stats.get('resolution', stats.get('color_resolution', na_text)), pixels_unit),
+            (fps_label, f"{stats.get('fps', 0):.1f}", fps_unit),
+            (frames_label, str(stats.get('frame_count', 0)), empty_unit),
+            (timestamp_label, time.strftime("%H:%M:%S", time.localtime(stats.get('last_timestamp', 0))), empty_unit),
+            (status_label, active_text if stats.get('is_active', False) else inactive_text, empty_unit)
         ]
         
         if stats.get('type') == 'realsense':
-            depth_res = stats.get('depth_resolution', 'N/A')
-            if depth_res != 'N/A':
-                display_props.insert(3, ("Profondeur", depth_res, "pixels"))
+            depth_res = stats.get('depth_resolution', na_text)
+            if depth_res != na_text:
+                depth_label = self.config.get('ui', 'camera_tab.statistics.labels.depth', "Profondeur")
+                display_props.insert(3, (depth_label, depth_res, pixels_unit))
         
         for i, (prop, value, unit) in enumerate(display_props):
             self.stats_table.insertRow(i)
@@ -649,14 +694,16 @@ class CameraTab(QWidget):
             
             refresh_msg = self.config.get('ui', 'camera_tab.messages.refresh_rate', 
                                          "🔄 Refresh rate: {fps:.1f} FPS")
-            self._log(refresh_msg.format(fps=1000/refresh_ms))
+            fps_value = 1000 / refresh_ms
+            self._log(refresh_msg.format(fps=fps_value))
     
     def _update_zoom(self):
         """Met à jour le zoom de tous les affichages"""
         zoom_value = self.zoom_slider.value()
         zoom_divisor = self.config.get('ui', 'camera_tab.controls.zoom_divisor', 100.0)
         zoom_factor = zoom_value / zoom_divisor
-        self.zoom_label.setText(f"{zoom_factor:.1f}x")
+        zoom_format = self.config.get('ui', 'camera_tab.labels.zoom_format', "{:.1f}x")
+        self.zoom_label.setText(zoom_format.format(zoom_factor))
         
         for display_widget in self.active_displays.values():
             display_widget.set_zoom(zoom_factor)
@@ -676,7 +723,9 @@ class CameraTab(QWidget):
         
         depth_msg = self.config.get('ui', 'camera_tab.messages.depth_toggled', 
                                    "👁️ Vue profondeur: {state}")
-        state = "Activée" if show_depth else "Désactivée"
+        enabled_text = self.config.get('ui', 'camera_tab.messages.depth_enabled', "Activée")
+        disabled_text = self.config.get('ui', 'camera_tab.messages.depth_disabled', "Désactivée")
+        state = enabled_text if show_depth else disabled_text
         self._log(depth_msg.format(state=state))
     
     def _camera_display_clicked(self, alias: str):
@@ -718,7 +767,7 @@ class CameraTab(QWidget):
                 
         except Exception as e:
             capture_error_msg = self.config.get('ui', 'camera_tab.messages.capture_error', 
-                                               "❌ Erreur capture frame: {error}")
+                                               "Erreur capture frame: {error}")
             self._log(capture_error_msg.format(error=e))
     
     def _save_image(self):
@@ -730,7 +779,12 @@ class CameraTab(QWidget):
             return
         
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        default_name = f"camera_{self.selected_camera.camera_type.value}_{timestamp}.jpg"
+        filename_template = self.config.get('ui', 'camera_tab.save.filename_template', 
+                                           "camera_{type}_{timestamp}.jpg")
+        default_name = filename_template.format(
+            type=self.selected_camera.camera_type.value,
+            timestamp=timestamp
+        )
         
         image_formats = self.config.get('ui', 'camera_tab.save.image_formats', 
                                        "Images (*.jpg *.jpeg *.png);;Tous les fichiers (*)")
@@ -751,7 +805,9 @@ class CameraTab(QWidget):
                 if (self.show_depth_cb.isChecked() and 
                     self.selected_camera.camera_type == CameraType.REALSENSE):
                     
-                    depth_filepath = filepath.replace('.jpg', '_depth.png').replace('.png', '_depth.png')
+                    depth_suffix = self.config.get('ui', 'camera_tab.save.depth_suffix', '_depth')
+                    depth_ext = self.config.get('ui', 'camera_tab.save.depth_extension', '.png')
+                    depth_filepath = filepath.replace('.jpg', f'{depth_suffix}{depth_ext}').replace('.png', f'{depth_suffix}{depth_ext}')
                     ret, _, depth_frame = self.camera_manager.get_camera_frame(alias)
                     
                     if ret and depth_frame is not None:
@@ -761,13 +817,16 @@ class CameraTab(QWidget):
                         self._log(depth_save_msg.format(filepath=depth_filepath))
             else:
                 save_error_msg = self.config.get('ui', 'camera_tab.messages.save_error', 
-                                                "❌ Erreur sauvegarde: {filepath}")
+                                                "Erreur sauvegarde: {filepath}")
                 self._log(save_error_msg.format(filepath=filepath))
     
     def _log(self, message: str):
         """Ajoute un message au log avec timestamp"""
-        timestamp = time.strftime("%H:%M:%S")
-        formatted_message = f"[{timestamp}] {message}"
+        timestamp_format = self.config.get('ui', 'camera_tab.log.timestamp_format', "%H:%M:%S")
+        message_format = self.config.get('ui', 'camera_tab.log.message_format', "[{timestamp}] {message}")
+        
+        timestamp = time.strftime(timestamp_format)
+        formatted_message = message_format.format(timestamp=timestamp, message=message)
         
         self.log_text.append(formatted_message)
         
@@ -792,7 +851,7 @@ class CameraTab(QWidget):
                                          "🔄 Nettoyage terminé")
             self._log(cleanup_msg)
         except Exception as e:
-            logger.error(f"❌ Erreur nettoyage: {e}")
+            logger.error(f"Erreur nettoyage: {e}")
         
         event.accept()
     

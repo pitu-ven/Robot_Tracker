@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/hardware/realsense_driver.py
-Driver pour caméra Intel RealSense entièrement configuré - Version 2.2
-Modification: Suppression complète des valeurs statiques, configuration via JSON
+Driver pour caméra Intel RealSense entièrement configuré - Version 2.5
+Modification: Correction définitive du bloc try-except ligne 377
 """
 
 import pyrealsense2 as rs
@@ -56,7 +56,8 @@ class RealSenseCamera:
         self.enable_filters = self.config.get('camera', 'realsense.enable_filters', True)
         self.enable_align = self.config.get('camera', 'realsense.enable_align', True)
         
-        logger.info(f"🎥 RealSense v2.2 initialisé - Série: {self.device_serial or 'Auto'}")
+        version_info = self.config.get('camera', 'realsense.version', '2.5')
+        logger.info(f"🎥 RealSense v{version_info} initialisé - Série: {self.device_serial or 'Auto'}")
     
     def detect_cameras(self) -> List[Dict[str, Any]]:
         """Détecte toutes les caméras RealSense disponibles"""
@@ -222,7 +223,7 @@ class RealSenseCamera:
         logger.info("🔧 Filtres post-traitement configurés")
 
     def get_frames(self) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-        """Récupère les frames couleur et profondeur - FORMAT CORRIGÉ"""
+        """Récupère les frames couleur et profondeur"""
         if not self.is_streaming:
             return False, None, None
         
@@ -285,9 +286,13 @@ class RealSenseCamera:
                 depth_sensor = profile.get_device().first_depth_sensor()
                 return depth_sensor.get_depth_scale()
             
+            # Si pas de pipeline actif, retourner valeur par défaut
             default_scale = self.config.get('camera', 'realsense.default_depth_scale', 0.001)
             return default_scale
-        except:
+            
+        except Exception as e:
+            # En cas d'erreur, retourner valeur de configuration par défaut
+            logger.debug(f"Erreur récupération depth_scale: {e}")
             return self.config.get('camera', 'realsense.default_depth_scale', 0.001)
     
     def get_intrinsics(self) -> Dict[str, Any]:
@@ -306,14 +311,6 @@ class RealSenseCamera:
             
             extrinsics = depth_stream.get_extrinsics_to(color_stream)
             
-            return {
-                'color': {
-                    'width': color_intrinsics.width,
-                    'height': color_intrinsics.height,
-                    'fx': color_intrinsics.fx,
-                    'fy': color_intrinsics.fy,
-                    'cx': color_intrinsics.ppx,
-                    'cy': color_intrinsics.ppy,
             return {
                 'color': {
                     'width': color_intrinsics.width,
@@ -345,7 +342,7 @@ class RealSenseCamera:
             return {}
 
     def get_info(self) -> Dict[str, Any]:
-        """Retourne les informations de la caméra - FORMAT CORRIGÉ"""
+        """Retourne les informations de la caméra"""
         if not self.is_streaming:
             return {
                 'device_serial': self.device_serial or 'Auto',
@@ -438,19 +435,23 @@ def test_realsense(device_serial: Optional[str] = None, duration: float = 5.0) -
     """Test rapide d'une caméra RealSense"""
     logger.info(f"🧪 Test RealSense {device_serial or 'auto'} pendant {duration}s...")
     
+    # Configuration de test avec toutes les valeurs externalisées
+    test_config = {
+        'camera.realsense.device_serial': device_serial,
+        'camera.realsense.color_width': 640,
+        'camera.realsense.color_height': 480,
+        'camera.realsense.color_fps': 30,
+        'camera.realsense.depth_width': 640,
+        'camera.realsense.depth_height': 480,
+        'camera.realsense.depth_fps': 30,
+        'camera.realsense.enable_filters': False,
+        'camera.realsense.enable_align': True,
+        'ui.realsense.logging.frame_log_interval': 30,
+        'test.frame_delay': 0.01
+    }
+    
     dummy_config = type('Config', (), {
-        'get': lambda self, section, key, default=None: {
-            'camera.realsense.device_serial': device_serial,
-            'camera.realsense.color_width': 640,
-            'camera.realsense.color_height': 480,
-            'camera.realsense.color_fps': 30,
-            'camera.realsense.depth_width': 640,
-            'camera.realsense.depth_height': 480,
-            'camera.realsense.depth_fps': 30,
-            'camera.realsense.enable_filters': False,
-            'camera.realsense.enable_align': True,
-            'ui.realsense.logging.frame_log_interval': 30
-        }.get(f"{section}.{key}", default)
+        'get': lambda self, section, key, default=None: test_config.get(f"{section}.{key}", default)
     })()
     
     camera = RealSenseCamera(dummy_config)
@@ -464,6 +465,7 @@ def test_realsense(device_serial: Optional[str] = None, duration: float = 5.0) -
         
         # Configuration du logging depuis JSON
         frame_log_interval = dummy_config.get('ui', 'realsense.logging.frame_log_interval', 30)
+        frame_delay = dummy_config.get('test', 'frame_delay', 0.01)
         
         while time.time() - start_time < duration:
             ret, color_img, depth_img = camera.get_frames()
@@ -476,7 +478,7 @@ def test_realsense(device_serial: Optional[str] = None, duration: float = 5.0) -
                     if frame_count % frame_log_interval == 0:
                         logger.info(f"📏 Profondeur centre: {center_depth:.3f}m")
             
-            time.sleep(0.01)
+            time.sleep(frame_delay)
         
         fps_measured = frame_count / duration
         logger.info(f"✅ Test réussi: {frame_count} frames en {duration}s ({fps_measured:.1f} FPS)")
@@ -513,7 +515,8 @@ if __name__ == "__main__":
         device_serial = cameras[0]['serial']
         print(f"\nTest de la caméra {device_serial}...")
         
-        success = test_realsense(device_serial, duration=3.0)
+        test_duration = 3.0
+        success = test_realsense(device_serial, duration=test_duration)
         if success:
             print("✅ Test réussi!")
         else:
