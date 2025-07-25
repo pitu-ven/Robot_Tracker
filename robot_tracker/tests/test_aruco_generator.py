@@ -21,7 +21,7 @@ from PyQt6.QtCore import Qt, QTimer
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from robot_tracker.tests.aruco_generator import ArUcoGeneratorDialog, ArUcoGeneratorThread, MarkerWidget
+    from robot_tracker.ui.aruco_generator import ArUcoGeneratorDialog, ArUcoGeneratorThread, MarkerWidget
 except ImportError as e:
     print(f"❌ Erreur import: {e}")
     print("💡 Exécutez depuis le répertoire robot_tracker/")

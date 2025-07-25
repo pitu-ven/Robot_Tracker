@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from robot_tracker.tests.aruco_generator import ArUcoGeneratorDialog
+    from robot_tracker.ui.aruco_generator import ArUcoGeneratorDialog
     from ui.main_window import ArUcoConfig
     from core.config_manager import ConfigManager
 except ImportError as e:
@@ -127,7 +127,7 @@ class ArUcoDemoWindow(QMainWindow):
         try:
             print("🧪 Lancement des tests...")
             
-            from tests.aruco_generator import TestArUcoGenerator
+            from robot_tracker.ui.aruco_generator import TestArUcoGenerator
             
             tester = TestArUcoGenerator()
             success = tester.run_all_tests()

@@ -19,9 +19,9 @@ from .target_tab import TargetTab
 from .calibration_tab import CalibrationTab
 from .measures_tab import MeasuresTab
 try:
-    from ..tests.aruco_generator import ArUcoGeneratorDialog
+    from .aruco_generator import ArUcoGeneratorDialog
 except ImportError:
-    from tests.aruco_generator import ArUcoGeneratorDialog
+    from robot_tracker.ui.aruco_generator import ArUcoGeneratorDialog
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
