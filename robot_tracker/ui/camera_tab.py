@@ -351,8 +351,7 @@ class CameraTab(QWidget):
                 self.open_btn.setEnabled(False)
                 
         except Exception as e:
-            error_msg = self.config.get('ui', 'camera_tab.messages.detection_error', 
-                                       "Erreur détection: {error}")
+            error_msg = self.config.get('ui', 'camera_tab.messages.detection_error', 'Detection error: {error}')
             self._log(error_msg.format(error=e))
     
     def _camera_selection_changed(self):
@@ -420,8 +419,7 @@ class CameraTab(QWidget):
                 self._log(failed_msg.format(name=self.selected_camera.name))
                 
         except Exception as e:
-            error_msg = self.config.get('ui', 'camera_tab.messages.open_error', 
-                                       "Erreur ouverture caméra: {error}")
+            error_msg = self.config.get('ui', 'camera_tab.messages.open_error', 'Camera open error: {error}')
             self._log(error_msg.format(error=e))
     
     def _close_selected_camera(self):
@@ -445,13 +443,11 @@ class CameraTab(QWidget):
                                             "✅ Caméra {alias} fermée")
                 self._log(closed_msg.format(alias=alias))
             else:
-                close_error_msg = self.config.get('ui', 'camera_tab.messages.close_error', 
-                                                 "Erreur fermeture {alias}")
+                close_error_msg = self.config.get('ui', 'camera_tab.messages.close_error', 'Close error: {alias}')
                 self._log(close_error_msg.format(alias=alias))
                 
         except Exception as e:
-            close_exception_msg = self.config.get('ui', 'camera_tab.messages.close_exception', 
-                                                 "Erreur fermeture caméra {alias}: {error}")
+            close_exception_msg = self.config.get('ui', 'camera_tab.messages.close_exception', 'Close exception: {alias} - {error}')
             self._log(close_exception_msg.format(alias=alias, error=e))
     
     def _add_camera_display(self, alias: str, display_widget: CameraDisplayWidget):
@@ -557,8 +553,7 @@ class CameraTab(QWidget):
             self._log(started_msg)
             
         except Exception as e:
-            start_error_msg = self.config.get('ui', 'camera_tab.messages.start_stream_error', 
-                                             "Erreur démarrage streaming: {error}")
+            start_error_msg = self.config.get('ui', 'camera_tab.messages.start_stream_error', 'Stream start error: {error}')
             self._log(start_error_msg.format(error=e))
     
     def _stop_streaming(self):
@@ -584,8 +579,7 @@ class CameraTab(QWidget):
             self._log(stopped_msg)
             
         except Exception as e:
-            stop_error_msg = self.config.get('ui', 'camera_tab.messages.stop_stream_error', 
-                                            "Erreur arrêt streaming: {error}")
+            stop_error_msg = self.config.get('ui', 'camera_tab.messages.stop_stream_error', 'Stream stop error: {error}')
             self._log(stop_error_msg.format(error=e))
     
     def _on_new_frames(self, frames_data: dict):
@@ -606,8 +600,7 @@ class CameraTab(QWidget):
                     display_widget.update_frame(color_frame, depth_frame)
                     
         except Exception as e:
-            frame_error_msg = self.config.get('ui', 'camera_tab.messages.frame_update_error', 
-                                             "Erreur mise à jour frames: {error}")
+            frame_error_msg = self.config.get('ui', 'camera_tab.messages.frame_update_error', 'Frame update error: {error}')
             self._log(frame_error_msg.format(error=e))
     
     def _update_statistics(self):
@@ -627,8 +620,7 @@ class CameraTab(QWidget):
                 self._display_camera_stats(all_stats[first_alias])
                 
         except Exception as e:
-            stats_error_msg = self.config.get('ui', 'camera_tab.messages.stats_error', 
-                                             "Erreur mise à jour stats: {error}")
+            stats_error_msg = self.config.get('ui', 'camera_tab.messages.stats_error', 'Stats error: {error}')
             self._log(stats_error_msg.format(error=e))
     
     def _display_camera_stats(self, stats: dict):
@@ -694,7 +686,8 @@ class CameraTab(QWidget):
             
             refresh_msg = self.config.get('ui', 'camera_tab.messages.refresh_rate', 
                                          "🔄 Refresh rate: {fps:.1f} FPS")
-            fps_value = 1000 / refresh_ms
+            fps_divisor = self.config.get('ui', 'camera_tab.controls.fps_divisor', 1000)
+            fps_value = fps_divisor / refresh_ms
             self._log(refresh_msg.format(fps=fps_value))
     
     def _update_zoom(self):
@@ -766,8 +759,7 @@ class CameraTab(QWidget):
                 self._log(capture_failed_msg.format(alias=alias))
                 
         except Exception as e:
-            capture_error_msg = self.config.get('ui', 'camera_tab.messages.capture_error', 
-                                               "Erreur capture frame: {error}")
+            capture_error_msg = self.config.get('ui', 'camera_tab.messages.capture_error', 'Capture error: {error}')
             self._log(capture_error_msg.format(error=e))
     
     def _save_image(self):
@@ -816,8 +808,7 @@ class CameraTab(QWidget):
                                                         "💾 Image profondeur sauvegardée: {filepath}")
                         self._log(depth_save_msg.format(filepath=depth_filepath))
             else:
-                save_error_msg = self.config.get('ui', 'camera_tab.messages.save_error', 
-                                                "Erreur sauvegarde: {filepath}")
+                save_error_msg = self.config.get('ui', 'camera_tab.messages.save_error', 'Save error: {filepath}')
                 self._log(save_error_msg.format(filepath=filepath))
     
     def _log(self, message: str):

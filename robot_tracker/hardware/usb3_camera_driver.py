@@ -505,11 +505,14 @@ class USB3CameraDriver:
         self.close()
 
 # Fonctions utilitaires améliorées
-def list_available_cameras() -> List[Dict[str, Any]]:
+def list_available_cameras(config=None) -> List[Dict[str, Any]]:
     """Liste toutes les caméras USB avec validation"""
     cameras = []
-    max_device_scan = 6  # Configuration par défaut
-    brightness_threshold = 10  # Configuration par défaut
+    if config is None:
+        config = type('Config', (), {'get': lambda self, section, key, default=None: default})()
+    
+    max_device_scan = config.get('hardware', 'usb3_camera.max_device_scan', 6)
+    brightness_threshold = config.get('hardware', 'usb3_camera.brightness_threshold', 10)
     
     for device_id in range(max_device_scan):
         cap = cv2.VideoCapture(device_id)
@@ -539,19 +542,22 @@ def list_available_cameras() -> List[Dict[str, Any]]:
     logger.info(f"🔍 {len(cameras)} caméra(s) USB détectée(s)")
     return cameras
 
-def test_camera(device_id: int, duration: float = 5.0) -> bool:
+def test_camera(device_id: int, duration: float = 5.0, config=None) -> bool:
     """Test complet d'une caméra USB avec diagnostic"""
-    config = {
+    if config is None:
+        config = type('Config', (), {'get': lambda self, section, key, default=None: default})()
+    
+    test_config = {
         'auto_exposure': True,
         'exposure': -1,
         'gain': 100,
         'brightness': 255,
         'contrast': 100,
-        'intensity_target': 30.0,
+        'intensity_target': config.get('hardware', 'usb3_camera.intensity_target', 30.0),
         'stabilization_delay': 2.0,
         'max_correction_attempts': 3,
         'reconfiguration': {
-            'brightness_threshold': 10.0,
+            'brightness_threshold': config.get('hardware', 'usb3_camera.brightness_threshold', 10.0),
             'success_threshold': 5.0
         },
         'test': {
@@ -563,7 +569,7 @@ def test_camera(device_id: int, duration: float = 5.0) -> bool:
     }
     
     try:
-        with USB3CameraDriver(device_id, config) as camera:
+        with USB3CameraDriver(device_id, test_config) as camera:
             if not camera.is_open:
                 return False
             

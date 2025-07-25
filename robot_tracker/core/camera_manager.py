@@ -42,7 +42,7 @@ class CameraType(Enum):
 
 @dataclass
 class CameraInfo:
-    """Informations d'une caméra détectée"""
+    """Classe pour stocker les informations d'une caméra"""
     camera_type: CameraType
     device_id: Any
     name: str

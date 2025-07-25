@@ -3,7 +3,7 @@
 """
 robot_tracker/hardware/realsense_driver.py
 Driver pour caméra Intel RealSense entièrement configuré - Version 2.5
-Modification: Correction définitive du bloc try-except ligne 377
+Modification: Correction définitive du bloc try-except
 """
 
 import pyrealsense2 as rs

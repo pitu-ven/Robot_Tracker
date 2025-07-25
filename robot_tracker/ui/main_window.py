@@ -183,7 +183,8 @@ class MainWindow(QMainWindow):
         help_menu = menubar.addMenu('&Aide')
         
         about_action = QAction('&À propos...', self)
-        about_action.setStatusTip('Informations sur l\'application')
+        about_status_tip = self.config.get('ui', 'main_window.about.status_tip', 'Informations sur l\'application')
+        about_action.setStatusTip(about_status_tip)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
         
