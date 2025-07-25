@@ -7,7 +7,7 @@ Modification: Implémentation complète avec configuration JSON et 5 onglets
 """
 
 from PyQt6.QtWidgets import (QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
-                           QStatusBar, QMenuBar, QToolBar, QMessageBox, QApplication)
+                           QStatusBar, QMenuBar, QToolBar, QMessageBox, QApplication, QDialog)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QFont, QAction, QPalette, QColor
 import sys
@@ -18,10 +18,90 @@ from .trajectory_tab import TrajectoryTab
 from .target_tab import TargetTab
 from .calibration_tab import CalibrationTab
 from .measures_tab import MeasuresTab
+try:
+    from ..tests.aruco_generator import ArUcoGeneratorDialog
+except ImportError:
+    from tests.aruco_generator import ArUcoGeneratorDialog
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class ArUcoConfig:
+    """Adaptateur de configuration pour le générateur ArUco"""
+    
+    def __init__(self, main_config):
+        self.main_config = main_config
+        
+        # Configuration par défaut du générateur ArUco
+        self.aruco_defaults = {
+            'ui.aruco_generator.window_title': "Générateur de Codes ArUco - Robot Tracker",
+            'ui.aruco_generator.window_width': 900,
+            'ui.aruco_generator.window_height': 700,
+            'ui.aruco_generator.marker_display_size': 120,
+            'ui.aruco_generator.dictionaries': [
+                "DICT_4X4_50", "DICT_5X5_100", "DICT_6X6_250", 
+                "DICT_7X7_1000", "DICT_ARUCO_ORIGINAL", "DICT_APRILTAG_16h5", "DICT_APRILTAG_25h9"
+            ],
+            'ui.aruco_generator.default_dictionary': "DICT_5X5_100",
+            'ui.aruco_generator.marker_size_min': 50,
+            'ui.aruco_generator.marker_size_max': 1000,
+            'ui.aruco_generator.marker_size_default': 200,
+            'ui.aruco_generator.grid_spacing': 10,
+            'ui.aruco_generator.markers_per_row': 6,
+            'ui.aruco_generator.max_markers_warning': 100,
+            'ui.aruco_generator.labels.config_group': "📋 Configuration",
+            'ui.aruco_generator.labels.dictionary': "Dictionnaire ArUco:",
+            'ui.aruco_generator.labels.marker_size': "Taille marqueur (pixels):",
+            'ui.aruco_generator.labels.id_range': "Plage d'IDs:",
+            'ui.aruco_generator.labels.print_options': "Options impression:",
+            'ui.aruco_generator.labels.add_border': "Ajouter bordure",
+            'ui.aruco_generator.labels.add_id_text': "Ajouter ID en texte",
+            'ui.aruco_generator.labels.high_quality': "Haute qualité",
+            'ui.aruco_generator.labels.controls_group': "🎬 Contrôles",
+            'ui.aruco_generator.labels.generate_button': "🎯 Générer Marqueurs",
+            'ui.aruco_generator.labels.stop_button': "⏹️ Arrêter",
+            'ui.aruco_generator.labels.display_group': "🖼️ Aperçu des Marqueurs",
+            'ui.aruco_generator.labels.save_button': "💾 Sauvegarder Images",
+            'ui.aruco_generator.labels.print_button': "🖨️ Imprimer",
+            'ui.aruco_generator.labels.close_button': "❌ Fermer",
+            'ui.aruco_generator.messages.ready': "Prêt à générer",
+            'ui.aruco_generator.messages.no_markers': "Aucun marqueur généré\\n\\nConfigurez les paramètres et cliquez sur 'Générer'",
+            'ui.aruco_generator.messages.generating': "Génération en cours...",
+            'ui.aruco_generator.messages.stopped': "Génération arrêtée",
+            'ui.aruco_generator.messages.completed': "✅ Marqueurs générés avec succès",
+            'ui.aruco_generator.messages.error': "❌ Erreur de génération",
+            'ui.aruco_generator.messages.print_success': "Impression terminée avec succès",
+            'ui.aruco_generator.default_save_dir': './aruco_markers',
+            'ui.aruco_generator.high_quality_scale': 4,
+            'ui.aruco_generator.border_size': 20,
+            'ui.aruco_generator.text_height': 40,
+            'ui.aruco_generator.font_scale': 1.0,
+            'ui.aruco_generator.print_markers_per_row': 4,
+            'ui.aruco_generator.print_markers_per_col': 6,
+            'ui.aruco_generator.print_margin': 50
+        }
+    
+    def get(self, section, key, default=None):
+        """Récupère une valeur de configuration avec fallback"""
+        full_key = f"{section}.{key}"
+        
+        # Essai dans la configuration principale
+        value = self.main_config.get(section, key, None)
+        
+        # Fallback vers les valeurs par défaut ArUco
+        if value is None:
+            value = self.aruco_defaults.get(full_key, default)
+        
+        return value
+    
+    def set(self, section, key, value):
+        """Définit une valeur de configuration"""
+        return self.main_config.set(section, key, value)
+    
+    def save_config(self, config_type):
+        """Sauvegarde la configuration"""
+        return self.main_config.save_config(config_type)
 
 class MainWindow(QMainWindow):
     """Fenêtre principale de l'application Robot Trajectory Controller"""
@@ -137,13 +217,13 @@ class MainWindow(QMainWindow):
         QApplication.instance().setPalette(palette)
     
     def create_menu_bar(self):
-        """Création de la barre de menu"""
+        """Création de la barre de menu avec générateur ArUco"""
         if not self.config.get('ui', 'layout.menu_bar', True):
             return
         
         menubar = self.menuBar()
         
-        # Menu Fichier
+        # Menu Fichier (existant)
         file_menu = menubar.addMenu('&Fichier')
         
         open_action = QAction('&Ouvrir Trajectoire...', self)
@@ -166,7 +246,7 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
-        # Menu Configuration
+        # Menu Configuration (modifié avec ArUco)
         config_menu = menubar.addMenu('&Configuration')
         
         camera_config_action = QAction('&Caméras...', self)
@@ -179,7 +259,16 @@ class MainWindow(QMainWindow):
         robot_config_action.triggered.connect(self.configure_robot)
         config_menu.addAction(robot_config_action)
         
-        # Menu Aide
+        # Séparateur avant les utilitaires
+        config_menu.addSeparator()
+        
+        # NOUVEAU: Générateur ArUco
+        aruco_generator_action = QAction('🎯 &Générateur ArUco...', self)
+        aruco_generator_action.setStatusTip('Générer et imprimer des codes ArUco')
+        aruco_generator_action.triggered.connect(self.open_aruco_generator)
+        config_menu.addAction(aruco_generator_action)
+        
+        # Menu Aide (existant)
         help_menu = menubar.addMenu('&Aide')
         
         about_action = QAction('&À propos...', self)
@@ -188,7 +277,7 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
         
-        logger.info("📋 Barre de menu créée")
+        logger.info("📋 Barre de menu créée avec générateur ArUco")
     
     def create_toolbar(self):
         """Création de la barre d'outils"""
@@ -456,6 +545,27 @@ class MainWindow(QMainWindow):
         new_size = event.size()
         self.config.set('ui', 'window.width', new_size.width())
         self.config.set('ui', 'window.height', new_size.height())
+
+    def open_aruco_generator(self):
+        """Ouvre le générateur de codes ArUco"""
+        try:
+            logger.info("🎯 Ouverture du générateur ArUco")
+            
+            # Fusion de la configuration ArUco avec la configuration existante
+            aruco_config = ArUcoConfig(self.config)
+            
+            dialog = ArUcoGeneratorDialog(aruco_config, self)
+            result = dialog.exec()
+            
+            if result == QDialog.DialogCode.Accepted:
+                logger.info("✅ Générateur ArUco fermé avec succès")
+            else:
+                logger.info("❌ Générateur ArUco annulé")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur ouverture générateur ArUco: {e}")
+            QMessageBox.critical(self, "Erreur", 
+                            f"Impossible d'ouvrir le générateur ArUco:\n{e}")
 
 
 # === Fonction utilitaire pour les tests ===

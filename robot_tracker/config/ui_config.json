@@ -1,8 +1,8 @@
 {
   "window": {
     "title": "Robot Trajectory Controller v1.0",
-    "width": 1920,
-    "height": 1057,
+    "width": 1536,
+    "height": 937,
     "fullscreen": false,
     "resizable": true,
     "center_on_screen": true
