@@ -1,6 +1,6 @@
-# robot_tracker/ui/main_window.py
-# Version 1.2 - Correction complète ArUco
-# Modification: Suppression ArUcoConfig obsolète, correction imports
+# ui/main_window.py
+# Version 1.3 - Correction intégration TargetTab avec camera_manager partagé
+# Modification: Ajout camera_manager centralisé pour partage entre onglets
 
 from PyQt6.QtWidgets import (QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
                            QStatusBar, QMenuBar, QToolBar, QMessageBox, QApplication, QDialog)
@@ -14,14 +14,15 @@ from .trajectory_tab import TrajectoryTab
 from .target_tab import TargetTab
 from .calibration_tab import CalibrationTab
 from .measures_tab import MeasuresTab
-from .aruco_generator import ArUcoGeneratorDialog  # Import direct corrigé
+from .aruco_generator import ArUcoGeneratorDialog
+from core.camera_manager import CameraManager  # Import ajouté
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
-    """Fenêtre principale avec intégration ArUco corrigée"""
+    """Fenêtre principale avec camera_manager centralisé"""
     
     def __init__(self, config):
         super().__init__()
@@ -29,6 +30,10 @@ class MainWindow(QMainWindow):
         # Configuration
         self.config = config
         self.tabs = {}
+        
+        # Camera manager centralisé pour partage entre onglets
+        self.camera_manager = CameraManager(self.config)
+        logger.info("🎥 CameraManager centralisé créé")
         
         # Interface
         self.init_ui()
@@ -49,8 +54,8 @@ class MainWindow(QMainWindow):
         window_config = self.config.get('ui', 'window', {})
         
         title = window_config.get('title', 'Robot Trajectory Controller v1.0')
-        width = window_config.get('width', 1536)
-        height = window_config.get('height', 937)
+        width = window_config.get('width', 1920)
+        height = window_config.get('height', 1057)
         
         self.setWindowTitle(title)
         self.resize(width, height)
@@ -68,36 +73,74 @@ class MainWindow(QMainWindow):
         self.create_status_bar()
     
     def create_tabs(self):
-        """Crée les onglets de l'application"""
+        """Crée les onglets de l'application avec camera_manager partagé"""
         tab_configs = self.config.get('ui', 'tabs', {})
         tab_names = tab_configs.get('tab_names', ["Caméra", "Trajectoire", "Cible", "Calibration", "Mesures"])
         
-        # Onglet 1: Caméra
-        self.tabs['camera'] = CameraTab(self.config)
-        self.central_widget.addTab(self.tabs['camera'], tab_names[0])
-        logger.info(f"📑 Onglet '{tab_names[0]}' créé avec succès")
+        try:
+            # Onglet 1: Caméra (utilise le camera_manager centralisé)
+            self.tabs['camera'] = CameraTab(self.config, camera_manager=self.camera_manager)
+            self.central_widget.addTab(self.tabs['camera'], tab_names[0])
+            logger.info(f"📑 Onglet '{tab_names[0]}' créé avec succès")
+        except Exception as e:
+            logger.error(f"❌ Erreur création onglet Caméra: {e}")
+            # Création onglet d'erreur minimal
+            error_widget = QWidget()
+            error_layout = QVBoxLayout(error_widget)
+            error_layout.addWidget(QLabel(f"Erreur onglet Caméra: {e}"))
+            self.central_widget.addTab(error_widget, "⚠️ Caméra")
         
-        # Onglet 2: Trajectoire
-        self.tabs['trajectory'] = TrajectoryTab(self.config)
-        self.central_widget.addTab(self.tabs['trajectory'], tab_names[1])
-        logger.info(f"📑 Onglet '{tab_names[1]}' créé avec succès")
+        try:
+            # Onglet 2: Trajectoire
+            self.tabs['trajectory'] = TrajectoryTab(self.config)
+            self.central_widget.addTab(self.tabs['trajectory'], tab_names[1])
+            logger.info(f"📑 Onglet '{tab_names[1]}' créé avec succès")
+        except Exception as e:
+            logger.error(f"❌ Erreur création onglet Trajectoire: {e}")
+            error_widget = QWidget()
+            self.central_widget.addTab(error_widget, "⚠️ Trajectoire")
         
-        # Onglet 3: Cible
-        self.tabs['target'] = TargetTab(self.config)
-        self.central_widget.addTab(self.tabs['target'], tab_names[2])
-        logger.info(f"📑 Onglet '{tab_names[2]}' créé avec succès")
+        try:
+            # Onglet 3: Cible (CORRECTION: ajout camera_manager)
+            self.tabs['target'] = TargetTab(self.config, self.camera_manager)
+            self.central_widget.addTab(self.tabs['target'], tab_names[2])
+            logger.info(f"📑 Onglet '{tab_names[2]}' créé avec succès")
+            
+            # Connexion des signaux entre onglets
+            if 'camera' in self.tabs and hasattr(self.tabs['camera'], 'camera_selected'):
+                self.tabs['camera'].camera_selected.connect(self.tabs['target'].on_camera_ready)
+                logger.info("🔗 Signaux caméra → cible connectés")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur création onglet Cible: {e}")
+            # Widget d'erreur avec informations
+            error_widget = QWidget()
+            error_layout = QVBoxLayout(error_widget)
+            error_layout.addWidget(QLabel(f"Erreur onglet Cible: {e}"))
+            error_layout.addWidget(QLabel("Vérifiez les dépendances OpenCV et les fichiers de configuration"))
+            self.central_widget.addTab(error_widget, "⚠️ Cible")
         
-        # Onglet 4: Calibration
-        self.tabs['calibration'] = CalibrationTab(self.config)
-        self.central_widget.addTab(self.tabs['calibration'], tab_names[3])
-        logger.info(f"📑 Onglet '{tab_names[3]}' créé avec succès")
+        try:
+            # Onglet 4: Calibration
+            self.tabs['calibration'] = CalibrationTab(self.config)
+            self.central_widget.addTab(self.tabs['calibration'], tab_names[3])
+            logger.info(f"📑 Onglet '{tab_names[3]}' créé avec succès")
+        except Exception as e:
+            logger.error(f"❌ Erreur création onglet Calibration: {e}")
+            error_widget = QWidget()
+            self.central_widget.addTab(error_widget, "⚠️ Calibration")
         
-        # Onglet 5: Mesures
-        self.tabs['measures'] = MeasuresTab(self.config)
-        self.central_widget.addTab(self.tabs['measures'], tab_names[4])
-        logger.info(f"📑 Onglet '{tab_names[4]}' créé avec succès")
+        try:
+            # Onglet 5: Mesures
+            self.tabs['measures'] = MeasuresTab(self.config)
+            self.central_widget.addTab(self.tabs['measures'], tab_names[4])
+            logger.info(f"📑 Onglet '{tab_names[4]}' créé avec succès")
+        except Exception as e:
+            logger.error(f"❌ Erreur création onglet Mesures: {e}")
+            error_widget = QWidget()
+            self.central_widget.addTab(error_widget, "⚠️ Mesures")
         
-        logger.info(f"📑 {len(self.tabs)} onglets créés avec succès")
+        logger.info(f"📑 {len(self.tabs)} onglet(s) créé(s) avec succès")
         
         # Onglet par défaut
         default_tab = tab_configs.get('default_tab', 0)
@@ -121,12 +164,6 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.open_trajectory_file)
         file_menu.addAction(open_action)
         
-        save_action = QAction('&Sauvegarder Rapport...', self)
-        save_action.setShortcut('Ctrl+S')
-        save_action.setStatusTip('Sauvegarder le rapport PDF')
-        save_action.triggered.connect(self.save_report)
-        file_menu.addAction(save_action)
-        
         file_menu.addSeparator()
         
         exit_action = QAction('&Quitter', self)
@@ -135,40 +172,21 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
-        # Menu Configuration avec ArUco
-        config_menu = menubar.addMenu('&Configuration')
-        
-        camera_config_action = QAction('&Caméras...', self)
-        camera_config_action.setStatusTip('Configuration des caméras')
-        camera_config_action.triggered.connect(self.configure_cameras)
-        config_menu.addAction(camera_config_action)
-        
-        robot_config_action = QAction('&Robot...', self)
-        robot_config_action.setStatusTip('Configuration de la communication robot')
-        robot_config_action.triggered.connect(self.configure_robot)
-        config_menu.addAction(robot_config_action)
-        
-        config_menu.addSeparator()
-        
-        # GÉNÉRATEUR ARUCO CORRIGÉ
-        aruco_generator_action = QAction('🎯 &Générateur ArUco...', self)
-        aruco_generator_action.setStatusTip('Générer et imprimer des codes ArUco')
-        aruco_generator_action.triggered.connect(self.open_aruco_generator)
-        config_menu.addAction(aruco_generator_action)
-        
-        # Menu Outils
+        # Menu Outils avec générateur ArUco
         tools_menu = menubar.addMenu('&Outils')
         
-        calibrate_action = QAction('&Calibrer Caméra-Robot...', self)
-        calibrate_action.setStatusTip('Lancer la calibration caméra-robot')
-        calibrate_action.triggered.connect(self.start_calibration)
-        tools_menu.addAction(calibrate_action)
+        aruco_action = QAction('&Générateur ArUco...', self)
+        aruco_action.setShortcut('Ctrl+G')
+        aruco_action.setStatusTip('Ouvrir le générateur de codes ArUco')
+        aruco_action.triggered.connect(self.show_aruco_generator)
+        tools_menu.addAction(aruco_action)
         
         # Menu Aide
         help_menu = menubar.addMenu('&Aide')
         
         about_action = QAction('&À propos...', self)
-        about_action.setStatusTip('Informations sur l\'application')
+        about_status_tip = self.config.get('ui', 'main_window.about.status_tip', 'Informations sur l\'application')
+        about_action.setStatusTip(about_status_tip)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
         
@@ -180,14 +198,15 @@ class MainWindow(QMainWindow):
         if not layout_config.get('toolbar', True):
             return
         
-        toolbar = self.addToolBar('Principal')
+        toolbar = self.addToolBar('Outils')
         
-        # Actions principales
+        # Action démarrage acquisition
         start_action = QAction('▶️ Démarrer', self)
         start_action.setStatusTip('Démarrer l\'acquisition')
         start_action.triggered.connect(self.start_acquisition)
         toolbar.addAction(start_action)
         
+        # Action arrêt acquisition
         stop_action = QAction('⏹️ Arrêter', self)
         stop_action.setStatusTip('Arrêter l\'acquisition')
         stop_action.triggered.connect(self.stop_acquisition)
@@ -195,187 +214,114 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
-        # ArUco dans la toolbar
+        # Action générateur ArUco
         aruco_action = QAction('🎯 ArUco', self)
         aruco_action.setStatusTip('Générateur de codes ArUco')
-        aruco_action.triggered.connect(self.open_aruco_generator)
+        aruco_action.triggered.connect(self.show_aruco_generator)
         toolbar.addAction(aruco_action)
         
         logger.info("🔧 Barre d'outils créée")
     
     def create_status_bar(self):
         """Création de la barre de statut"""
-        self.status_bar = self.statusBar()
-        
-        status_config = self.config.get('ui', 'status_bar', {})
-        ready_message = status_config.get('ready_message', 'Prêt')
-        
-        self.status_bar.showMessage(ready_message)
-        logger.info("📊 Barre de status créée")
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage('Prêt')
     
     def apply_theme(self):
         """Application du thème depuis la configuration"""
         theme_config = self.config.get('ui', 'theme', {})
-        style_name = theme_config.get('style', 'Fusion')
         
-        QApplication.instance().setStyle(style_name)
-        
-        if theme_config.get('dark_mode', True):
-            self.apply_dark_theme()
-            logger.info(f"🎨 Thème appliqué: {style_name}, palette: dark")
-        else:
-            logger.info(f"🎨 Thème appliqué: {style_name}, palette: default")
-        
-        # Police personnalisée
-        font_config = theme_config.get('font', {})
-        if font_config:
-            font = QFont(
-                font_config.get('family', 'Segoe UI'),
-                font_config.get('size', 10)
-            )
-            QApplication.instance().setFont(font)
-    
-    def apply_dark_theme(self):
-        """Application du thème sombre"""
-        palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(0, 0, 0))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
-        
-        QApplication.instance().setPalette(palette)
+        if theme_config.get('dark_mode', False):
+            self.setStyleSheet("""
+                QMainWindow { background-color: #2b2b2b; color: #ffffff; }
+                QTabWidget::pane { border: 1px solid #555555; }
+                QTabBar::tab { background-color: #3b3b3b; padding: 8px; margin: 2px; }
+                QTabBar::tab:selected { background-color: #555555; }
+            """)
     
     def center_window(self):
         """Centre la fenêtre sur l'écran"""
-        screen = QApplication.primaryScreen().geometry()
-        window_geometry = self.geometry()
-        
-        x = (screen.width() - window_geometry.width()) // 2
-        y = (screen.height() - window_geometry.height()) // 2
-        
-        self.move(x, y)
-        logger.info(f"🎯 Fenêtre centrée à ({x}, {y})")
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_rect = screen.geometry()
+            window_rect = self.geometry()
+            
+            x = (screen_rect.width() - window_rect.width()) // 2
+            y = (screen_rect.height() - window_rect.height()) // 2
+            
+            self.move(x, y)
     
     def connect_signals(self):
-        """Connecte les signaux de l'interface"""
-        # Connexions des onglets si nécessaire
-        logger.info("🔗 Connexions établies")
+        """Connexion des signaux entre composants"""
+        # Connexion des signaux inter-onglets
+        if 'camera' in self.tabs and 'target' in self.tabs:
+            # Signal nouvelle frame caméra vers onglet cible
+            if hasattr(self.tabs['camera'], 'frame_captured'):
+                self.tabs['camera'].frame_captured.connect(self._on_camera_frame)
     
-    def open_aruco_generator(self):
-        """Ouvre le générateur ArUco - VERSION CORRIGÉE"""
+    def _on_camera_frame(self, alias, frame_data):
+        """Callback réception frame caméra"""
+        # Transmission vers onglet cible si actif
+        if 'target' in self.tabs and hasattr(self.tabs['target'], '_on_new_frame'):
+            self.tabs['target']._on_new_frame(frame_data.get('color'))
+    
+    def show_aruco_generator(self):
+        """Affiche le générateur ArUco"""
         try:
-            logger.info("🎯 Ouverture du générateur ArUco")
-            
-            # Vérification de la disponibilité d'OpenCV ArUco
-            import cv2
-            if not hasattr(cv2, 'aruco'):
-                QMessageBox.warning(
-                    self, "ArUco indisponible",
-                    "Le module OpenCV ArUco n'est pas disponible.\n"
-                    "Installez opencv-contrib-python pour utiliser cette fonctionnalité."
-                )
-                return
-            
-            # CORRECTION : Utiliser directement le ConfigManager
             dialog = ArUcoGeneratorDialog(self.config, self)
-            result = dialog.exec()
-            
-            if result == QDialog.DialogCode.Accepted:
-                logger.info("✅ Générateur ArUco fermé avec succès")
-            else:
-                logger.info("📝 Générateur ArUco fermé")
-                
-        except ImportError as e:
-            QMessageBox.critical(
-                self, "Erreur d'import",
-                f"Impossible d'importer le générateur ArUco:\n{e}\n\n"
-                "Vérifiez l'installation d'OpenCV et la structure des fichiers."
-            )
-            logger.error(f"❌ Erreur import ArUco: {e}")
+            dialog.exec()
         except Exception as e:
-            logger.error(f"❌ Erreur ouverture générateur ArUco: {e}")
-            QMessageBox.critical(
-                self, "Erreur",
-                f"Erreur lors de l'ouverture du générateur ArUco:\n{e}"
-            )
+            QMessageBox.critical(self, "Erreur", f"Impossible d'ouvrir le générateur ArUco:\n{e}")
+            logger.error(f"❌ Erreur générateur ArUco: {e}")
     
-    # Méthodes d'action
     def open_trajectory_file(self):
         """Ouvre un fichier de trajectoire"""
-        from PyQt6.QtWidgets import QFileDialog
-        
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 'Ouvrir trajectoire',
-            '', 'Fichiers trajectoire (*.val3 *.krl *.gcode);;Tous (*.*)'
-        )
-        
-        if file_path:
-            self.tabs['trajectory'].load_trajectory(file_path)
-            self.status_bar.showMessage(f'Trajectoire chargée: {file_path}')
-    
-    def save_report(self):
-        """Sauvegarde le rapport PDF"""
-        from PyQt6.QtWidgets import QFileDialog
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 'Sauvegarder rapport',
-            'rapport_trajectoire.pdf', 'Fichiers PDF (*.pdf)'
-        )
-        
-        if file_path:
-            if self.tabs['measures'].generate_pdf_report(file_path):
-                self.status_bar.showMessage(f'Rapport sauvegardé: {file_path}')
-            else:
-                QMessageBox.warning(self, 'Erreur', 'Erreur lors de la génération du rapport')
-    
-    def configure_cameras(self):
-        """Configure les caméras"""
-        self.tabs['camera'].show_configuration_dialog()
-    
-    def configure_robot(self):
-        """Configure la communication robot"""
-        QMessageBox.information(self, 'Info', 'Configuration robot (à implémenter)')
-    
-    def start_calibration(self):
-        """Démarre la calibration"""
-        self.tabs['calibration'].start_calibration_process()
+        # TODO: Implémentation ouverture fichier trajectoire
+        QMessageBox.information(self, "Information", "Fonctionnalité en développement")
     
     def start_acquisition(self):
         """Démarre l'acquisition"""
-        self.tabs['camera'].start_acquisition()
-        self.status_bar.showMessage('Acquisition démarrée')
+        if 'camera' in self.tabs and hasattr(self.tabs['camera'], '_start_streaming'):
+            self.tabs['camera']._start_streaming()
+            self.status_bar.showMessage('Acquisition démarrée')
+        else:
+            self.status_bar.showMessage('Aucune caméra disponible')
     
     def stop_acquisition(self):
         """Arrête l'acquisition"""
-        self.tabs['camera'].stop_acquisition()
-        self.status_bar.showMessage('Acquisition arrêtée')
+        if 'camera' in self.tabs and hasattr(self.tabs['camera'], '_stop_streaming'):
+            self.tabs['camera']._stop_streaming()
+            self.status_bar.showMessage('Acquisition arrêtée')
     
     def update_status(self):
         """Met à jour la barre de statut"""
-        if hasattr(self.tabs.get('camera'), 'is_acquiring') and self.tabs['camera'].is_acquiring:
-            fps = getattr(self.tabs['camera'], 'current_fps', 0)
-            self.status_bar.showMessage(f'Acquisition en cours - {fps:.1f} FPS')
+        if 'camera' in self.tabs and hasattr(self.tabs['camera'], 'is_streaming'):
+            if self.tabs['camera'].is_streaming:
+                # Affichage FPS si disponible
+                fps = getattr(self.tabs['camera'], 'current_fps', 0)
+                self.status_bar.showMessage(f'Acquisition en cours - {fps:.1f} FPS')
+        
+        # Mise à jour informations onglet cible
+        if 'target' in self.tabs and hasattr(self.tabs['target'], 'is_tracking'):
+            if self.tabs['target'].is_tracking:
+                targets_count = len(getattr(self.tabs['target'], 'detected_targets', []))
+                current_msg = self.status_bar.currentMessage()
+                if 'Acquisition' in current_msg:
+                    self.status_bar.showMessage(f'{current_msg} - {targets_count} cibles')
     
     def show_about(self):
         """Affiche les informations sur l'application"""
         about_text = f"""
         <h3>Robot Trajectory Controller</h3>
-        <p>Version 1.2</p>
+        <p>Version 1.3</p>
         <p>Système de contrôle de trajectoire robotique par vision industrielle.</p>
-        <p>Avec générateur ArUco intégré.</p>
+        <p>Avec générateur ArUco intégré et onglet Cible.</p>
         
         <p><b>Fonctionnalités:</b></p>
         <ul>
         <li>Tracking temps réel (2D/3D)</li>
+        <li>Détection multi-cibles (ArUco, réfléchissants, LEDs)</li>
         <li>Calibration caméra-robot</li>
         <li>Génération de codes ArUco</li>
         <li>Analyse de trajectoires</li>
@@ -391,10 +337,21 @@ class MainWindow(QMainWindow):
             # Arrêt du timer
             self.update_timer.stop()
             
+            # Nettoyage camera manager
+            if hasattr(self, 'camera_manager'):
+                self.camera_manager.close_all_cameras()
+                logger.info("📷 Toutes les caméras fermées")
+            
             # Nettoyage des onglets
             for tab_name, tab_instance in self.tabs.items():
                 if hasattr(tab_instance, 'cleanup'):
                     tab_instance.cleanup()
+                elif hasattr(tab_instance, 'closeEvent'):
+                    # Simulation closeEvent pour l'onglet
+                    try:
+                        tab_instance.closeEvent(event)
+                    except:
+                        pass
             
             # Sauvegarde de la configuration si modifiée
             if hasattr(self.config, 'save_all_configs'):
@@ -429,6 +386,7 @@ class MainWindow(QMainWindow):
 # Point d'entrée pour test
 if __name__ == "__main__":
     from core.config_manager import ConfigManager
+    from PyQt6.QtWidgets import QLabel
     
     app = QApplication(sys.argv)
     config = ConfigManager()

@@ -1,10 +1,6 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-robot_tracker/ui/camera_tab.py
-Onglet de gestion des caméras sans aucune valeur statique - Version 4.3
-Modification: Correction finale des messages d'erreur et valeurs hardcodées
-"""
+# ui/camera_tab.py
+# Version 4.4 - Support camera_manager externe partagé complet
+# Modification: Fichier complet avec paramètre camera_manager pour partage entre onglets
 
 import cv2
 import numpy as np
@@ -31,24 +27,34 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class CameraTab(QWidget):
-    """Onglet de gestion des caméras entièrement configuré via JSON"""
+    """Onglet de gestion des caméras avec support camera_manager partagé"""
     
     # Signaux
     camera_selected = pyqtSignal(str)
     frame_captured = pyqtSignal(str, object)
+    camera_started = pyqtSignal(str)  # Signal pour autres onglets
     
-    def __init__(self, config, parent=None):
+    def __init__(self, config, camera_manager=None, parent=None):
         super().__init__(parent)
         self.config = config
         
-        # Gestionnaire de caméras
-        self.camera_manager = CameraManager(self.config)
+        # Gestionnaire de caméras (externe ou créé localement)
+        if camera_manager is not None:
+            self.camera_manager = camera_manager
+            self.owns_camera_manager = False
+            logger.info("🎥 CameraTab utilise camera_manager externe")
+        else:
+            self.camera_manager = CameraManager(self.config)
+            self.owns_camera_manager = True
+            logger.info("🎥 CameraTab crée son propre camera_manager")
         
         # État de l'interface
         self.available_cameras = []
         self.active_displays = {}
         self.is_streaming = False
         self.selected_camera = None
+        self.current_fps = 0.0
+        self.frame_count = 0
         
         # Timers avec configuration
         self.update_timer = QTimer()
@@ -62,8 +68,8 @@ class CameraTab(QWidget):
         self._connect_signals()
         self._detect_cameras()
         
-        version_number = self.config.get('ui', 'camera_tab.version', '4.3')
-        logger.info(f"🎥 CameraTab v{version_number} initialisé (zéro valeur statique)")
+        version_number = self.config.get('ui', 'camera_tab.version', '4.4')
+        logger.info(f"🎥 CameraTab v{version_number} initialisé (camera_manager partagé)")
     
     def _init_ui(self):
         """Initialise l'interface utilisateur avec configuration JSON"""
@@ -81,346 +87,363 @@ class CameraTab(QWidget):
         splitter.addWidget(display_area)
         
         # Proportions depuis configuration
-        control_width = self.config.get('ui', 'camera_tab.layout.control_panel_width', 300)
-        display_width = self.config.get('ui', 'camera_tab.layout.display_area_width', 900)
+        control_width = self.config.get('ui', 'camera_tab.layout.control_panel_width', 280)
+        display_width = self.config.get('ui', 'camera_tab.layout.display_area_width', 800)
         splitter.setSizes([control_width, display_width])
     
     def _create_control_panel(self) -> QWidget:
-        """Crée le panel de contrôle avec configuration JSON"""
+        """Crée le panneau de contrôle"""
         panel = QWidget()
+        panel_width = self.config.get('ui', 'camera_tab.layout.control_panel_width', 280)
+        panel.setMaximumWidth(panel_width)
+        
         layout = QVBoxLayout(panel)
         
-        # === Détection et sélection ===
-        detection_group_title = self.config.get('ui', 'camera_tab.labels.detection_group', "🔍 Détection & Sélection")
-        detection_group = QGroupBox(detection_group_title)
-        detection_layout = QVBoxLayout(detection_group)
+        # Sélection caméra
+        camera_group = self._create_camera_selection_group()
+        layout.addWidget(camera_group)
         
-        # Bouton détection avec taille configurable
-        button_height = self.config.get('ui', 'camera_tab.controls.button_height', 35)
-        detect_btn_text = self.config.get('ui', 'camera_tab.labels.detect_button', "🔄 Détecter caméras")
-        self.detect_btn = QPushButton(detect_btn_text)
-        self.detect_btn.setMinimumHeight(button_height)
-        detection_layout.addWidget(self.detect_btn)
+        # Contrôles acquisition
+        acquisition_group = self._create_acquisition_controls_group()
+        layout.addWidget(acquisition_group)
         
-        # ComboBox avec taille configurable
-        combo_height = self.config.get('ui', 'camera_tab.controls.combo_height', 30)
-        self.camera_combo = QComboBox()
-        self.camera_combo.setMinimumHeight(combo_height)
-        
-        combo_label_text = self.config.get('ui', 'camera_tab.labels.available_cameras', "Caméras disponibles:")
-        detection_layout.addWidget(QLabel(combo_label_text))
-        detection_layout.addWidget(self.camera_combo)
-        
-        # Boutons d'action
-        btn_layout = QHBoxLayout()
-        open_btn_text = self.config.get('ui', 'camera_tab.labels.open_button', "📷 Ouvrir")
-        close_btn_text = self.config.get('ui', 'camera_tab.labels.close_button', "❌ Fermer")
-        self.open_btn = QPushButton(open_btn_text)
-        self.close_btn = QPushButton(close_btn_text)
-        self.open_btn.setEnabled(False)
-        self.close_btn.setEnabled(False)
-        btn_layout.addWidget(self.open_btn)
-        btn_layout.addWidget(self.close_btn)
-        detection_layout.addLayout(btn_layout)
-        
-        layout.addWidget(detection_group)
-        
-        # === Streaming ===
-        streaming_group_title = self.config.get('ui', 'camera_tab.labels.streaming_group', "🎬 Streaming")
-        streaming_group = QGroupBox(streaming_group_title)
-        streaming_layout = QVBoxLayout(streaming_group)
-        
-        stream_btn_layout = QHBoxLayout()
-        start_btn_text = self.config.get('ui', 'camera_tab.labels.start_button', "▶️ Démarrer")
-        stop_btn_text = self.config.get('ui', 'camera_tab.labels.stop_button', "⏹️ Arrêter")
-        self.start_stream_btn = QPushButton(start_btn_text)
-        self.stop_stream_btn = QPushButton(stop_btn_text)
-        self.start_stream_btn.setEnabled(False)
-        self.stop_stream_btn.setEnabled(False)
-        stream_btn_layout.addWidget(self.start_stream_btn)
-        stream_btn_layout.addWidget(self.stop_stream_btn)
-        streaming_layout.addLayout(stream_btn_layout)
-        
-        # Refresh rate avec limites configurables
-        fps_layout = QHBoxLayout()
-        refresh_label_text = self.config.get('ui', 'camera_tab.labels.refresh_rate', "Refresh UI (ms):")
-        fps_layout.addWidget(QLabel(refresh_label_text))
-        self.refresh_spinbox = QSpinBox()
-        
-        refresh_min = self.config.get('ui', 'camera_tab.controls.refresh_rate_min', 16)
-        refresh_max = self.config.get('ui', 'camera_tab.controls.refresh_rate_max', 1000)
-        refresh_default = self.config.get('ui', 'camera_tab.controls.refresh_rate_default', 50)
-        refresh_suffix = self.config.get('ui', 'camera_tab.labels.refresh_suffix', " ms")
-        
-        self.refresh_spinbox.setRange(refresh_min, refresh_max)
-        self.refresh_spinbox.setValue(refresh_default)
-        self.refresh_spinbox.setSuffix(refresh_suffix)
-        fps_layout.addWidget(self.refresh_spinbox)
-        streaming_layout.addLayout(fps_layout)
-        
-        layout.addWidget(streaming_group)
-        
-        # === Affichage avec vue double ===
-        display_group_title = self.config.get('ui', 'camera_tab.labels.display_group', "🖼️ Affichage")
-        display_group = QGroupBox(display_group_title)
-        display_layout = QVBoxLayout(display_group)
-        
-        # Option vue profondeur
-        depth_label = self.config.get('ui', 'camera_tab.labels.show_depth', "Afficher vue profondeur")
-        depth_tooltip = self.config.get('ui', 'camera_tab.tooltips.show_depth', 
-                                       "Active la vue profondeur à côté de la vue RGB (RealSense uniquement)")
-        self.show_depth_cb = QCheckBox(depth_label)
-        self.show_depth_cb.setToolTip(depth_tooltip)
-        display_layout.addWidget(self.show_depth_cb)
-        
-        # Zoom avec configuration
-        zoom_layout = QHBoxLayout()
-        zoom_label_text = self.config.get('ui', 'camera_tab.labels.zoom', "Zoom:")
-        zoom_layout.addWidget(QLabel(zoom_label_text))
-        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        
-        zoom_min = self.config.get('ui', 'camera_tab.controls.zoom_range_min', 10)
-        zoom_max = self.config.get('ui', 'camera_tab.controls.zoom_range_max', 500)
-        zoom_default = self.config.get('ui', 'camera_tab.controls.zoom_default', 100)
-        zoom_initial_label = self.config.get('ui', 'camera_tab.labels.zoom_initial', "1.0x")
-        
-        self.zoom_slider.setRange(zoom_min, zoom_max)
-        self.zoom_slider.setValue(zoom_default)
-        self.zoom_label = QLabel(zoom_initial_label)
-        zoom_layout.addWidget(self.zoom_slider)
-        zoom_layout.addWidget(self.zoom_label)
-        display_layout.addLayout(zoom_layout)
-        
-        # Options d'affichage
-        stats_label = self.config.get('ui', 'camera_tab.labels.show_stats', "Afficher statistiques")
-        self.show_stats_cb = QCheckBox(stats_label)
-        stats_default_checked = self.config.get('ui', 'camera_tab.controls.stats_default_checked', True)
-        self.show_stats_cb.setChecked(stats_default_checked)
-        display_layout.addWidget(self.show_stats_cb)
-        
+        # Paramètres affichage
+        display_group = self._create_display_settings_group()
         layout.addWidget(display_group)
         
-        # === Capture ===
-        capture_group_title = self.config.get('ui', 'camera_tab.labels.capture_group', "📸 Capture")
-        capture_group = QGroupBox(capture_group_title)
-        capture_layout = QVBoxLayout(capture_group)
-        
-        capture_btn_text = self.config.get('ui', 'camera_tab.labels.capture_frame', "📸 Capturer frame")
-        save_btn_text = self.config.get('ui', 'camera_tab.labels.save_image', "💾 Sauvegarder image")
-        
-        self.capture_btn = QPushButton(capture_btn_text)
-        self.save_btn = QPushButton(save_btn_text)
-        self.capture_btn.setEnabled(False)
-        self.save_btn.setEnabled(False)
-        capture_layout.addWidget(self.capture_btn)
-        capture_layout.addWidget(self.save_btn)
-        
-        layout.addWidget(capture_group)
-        
-        # === Statistiques ===
-        stats_group_title = self.config.get('ui', 'camera_tab.labels.stats_group', "📊 Statistiques")
-        stats_group = QGroupBox(stats_group_title)
-        stats_layout = QVBoxLayout(stats_group)
-        
-        self.stats_table = QTableWidget()
-        stats_columns = self.config.get('ui', 'camera_tab.statistics.columns', 
-                                       ["Propriété", "Valeur", "Unité"])
-        self.stats_table.setColumnCount(len(stats_columns))
-        self.stats_table.setHorizontalHeaderLabels(stats_columns)
-        self.stats_table.horizontalHeader().setStretchLastSection(True)
-        
-        table_max_height = self.config.get('ui', 'camera_tab.statistics.table_max_height', 200)
-        self.stats_table.setMaximumHeight(table_max_height)
-        stats_layout.addWidget(self.stats_table)
-        
+        # Statistiques
+        stats_group = self._create_statistics_group()
         layout.addWidget(stats_group)
-        
-        # === Log ===
-        log_group_title = self.config.get('ui', 'camera_tab.labels.log_group', "📝 Journal")
-        log_group = QGroupBox(log_group_title)
-        log_layout = QVBoxLayout(log_group)
-        
-        self.log_text = QTextEdit()
-        log_max_height = self.config.get('ui', 'camera_tab.log.max_height', 120)
-        self.log_text.setMaximumHeight(log_max_height)
-        
-        # Font configurée pour le log
-        log_font = QFont()
-        font_family = self.config.get('ui', 'camera_tab.log.font_family', 'Consolas')
-        font_size = self.config.get('ui', 'camera_tab.log.font_size', 8)
-        log_font.setFamily(font_family)
-        log_font.setPointSize(font_size)
-        self.log_text.setFont(log_font)
-        log_layout.addWidget(self.log_text)
-        
-        clear_log_text = self.config.get('ui', 'camera_tab.labels.clear_log', "🗑️ Effacer log")
-        self.clear_log_btn = QPushButton(clear_log_text)
-        log_layout.addWidget(self.clear_log_btn)
-        
-        layout.addWidget(log_group)
         
         layout.addStretch()
         return panel
     
-    def _create_display_area(self) -> QWidget:
-        """Crée la zone d'affichage des caméras avec configuration"""
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    def _create_camera_selection_group(self) -> QGroupBox:
+        """Groupe de sélection des caméras"""
+        group = QGroupBox("📷 Sélection Caméra")
+        layout = QVBoxLayout(group)
         
+        # ComboBox caméras
+        self.camera_combo = QComboBox()
+        self.camera_combo.currentTextChanged.connect(self._on_camera_selected)
+        layout.addWidget(self.camera_combo)
+        
+        # Informations caméra sélectionnée
+        self.camera_info_label = QLabel("Aucune caméra sélectionnée")
+        self.camera_info_label.setWordWrap(True)
+        self.camera_info_label.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(self.camera_info_label)
+        
+        # Boutons contrôle
+        buttons_layout = QHBoxLayout()
+        
+        self.refresh_btn = QPushButton("🔄 Actualiser")
+        self.refresh_btn.clicked.connect(self._detect_cameras)
+        
+        self.open_btn = QPushButton("▶️ Ouvrir")
+        self.open_btn.clicked.connect(self._open_selected_camera)
+        self.open_btn.setEnabled(False)
+        
+        self.close_btn = QPushButton("⏹️ Fermer")
+        self.close_btn.clicked.connect(self._close_selected_camera)
+        self.close_btn.setEnabled(False)
+        
+        buttons_layout.addWidget(self.refresh_btn)
+        buttons_layout.addWidget(self.open_btn)
+        buttons_layout.addWidget(self.close_btn)
+        layout.addLayout(buttons_layout)
+        
+        return group
+    
+    def _create_acquisition_controls_group(self) -> QGroupBox:
+        """Groupe de contrôles d'acquisition"""
+        group = QGroupBox("🎬 Acquisition")
+        layout = QVBoxLayout(group)
+        
+        # Boutons streaming
+        streaming_layout = QHBoxLayout()
+        
+        self.start_btn = QPushButton("▶️ Démarrer")
+        self.start_btn.clicked.connect(self._start_streaming)
+        self.start_btn.setEnabled(False)
+        
+        self.stop_btn = QPushButton("⏹️ Arrêter")
+        self.stop_btn.clicked.connect(self._stop_streaming)
+        self.stop_btn.setEnabled(False)
+        
+        streaming_layout.addWidget(self.start_btn)
+        streaming_layout.addWidget(self.stop_btn)
+        layout.addLayout(streaming_layout)
+        
+        # Boutons capture/sauvegarde
+        capture_layout = QHBoxLayout()
+        
+        self.capture_btn = QPushButton("📸 Capturer")
+        self.capture_btn.clicked.connect(self._capture_frame)
+        self.capture_btn.setEnabled(False)
+        
+        self.save_btn = QPushButton("💾 Sauver")
+        self.save_btn.clicked.connect(self._save_image)
+        self.save_btn.setEnabled(False)
+        
+        capture_layout.addWidget(self.capture_btn)
+        capture_layout.addWidget(self.save_btn)
+        layout.addLayout(capture_layout)
+        
+        # Paramètres d'acquisition
+        params_layout = QVBoxLayout()
+        
+        # FPS cible
+        fps_layout = QHBoxLayout()
+        fps_layout.addWidget(QLabel("FPS cible:"))
+        
+        self.fps_spinbox = QSpinBox()
+        self.fps_spinbox.setRange(1, 60)
+        self.fps_spinbox.setValue(self.config.get('ui', 'camera_tab.acquisition.default_fps', 30))
+        self.fps_spinbox.valueChanged.connect(self._on_fps_changed)
+        
+        fps_layout.addWidget(self.fps_spinbox)
+        params_layout.addLayout(fps_layout)
+        
+        layout.addLayout(params_layout)
+        
+        return group
+    
+    def _create_display_settings_group(self) -> QGroupBox:
+        """Groupe de paramètres d'affichage"""
+        group = QGroupBox("🖼️ Affichage")
+        layout = QVBoxLayout(group)
+        
+        # Vue profondeur
+        self.show_depth_cb = QCheckBox("Vue profondeur (RealSense)")
+        self.show_depth_cb.toggled.connect(self._toggle_depth_view)
+        layout.addWidget(self.show_depth_cb)
+        
+        # Zoom
+        zoom_layout = QHBoxLayout()
+        zoom_layout.addWidget(QLabel("Zoom:"))
+        
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(10, 300)  # 0.1x à 3.0x
+        self.zoom_slider.setValue(100)  # 1.0x
+        self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
+        
+        self.zoom_label = QLabel("100%")
+        
+        zoom_layout.addWidget(self.zoom_slider)
+        zoom_layout.addWidget(self.zoom_label)
+        layout.addLayout(zoom_layout)
+        
+        # Options d'affichage
+        display_options = QVBoxLayout()
+        
+        self.show_info_cb = QCheckBox("Informations overlay")
+        self.show_info_cb.setChecked(True)
+        self.show_info_cb.toggled.connect(self._toggle_info_overlay)
+        
+        self.show_fps_cb = QCheckBox("Afficher FPS")
+        self.show_fps_cb.setChecked(True)
+        
+        display_options.addWidget(self.show_info_cb)
+        display_options.addWidget(self.show_fps_cb)
+        layout.addLayout(display_options)
+        
+        return group
+    
+    def _create_statistics_group(self) -> QGroupBox:
+        """Groupe de statistiques"""
+        group = QGroupBox("📊 Statistiques")
+        layout = QVBoxLayout(group)
+        
+        # Labels statistiques
+        self.fps_label = QLabel("FPS: 0.0")
+        self.cameras_label = QLabel("Caméras: 0/0")
+        self.frames_label = QLabel("Images: 0")
+        self.resolution_label = QLabel("Résolution: N/A")
+        
+        layout.addWidget(self.fps_label)
+        layout.addWidget(self.cameras_label)
+        layout.addWidget(self.frames_label)
+        layout.addWidget(self.resolution_label)
+        
+        # Zone de log
+        log_header = QLabel("Logs:")
+        log_header.setStyleSheet("font-weight: bold;")
+        layout.addWidget(log_header)
+        
+        self.log_text = QTextEdit()
+        self.log_text.setMaximumHeight(120)
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("font-family: monospace; font-size: 9px;")
+        layout.addWidget(self.log_text)
+        
+        # Bouton de nettoyage des logs
+        clear_logs_btn = QPushButton("🗑️ Effacer logs")
+        clear_logs_btn.clicked.connect(lambda: self.log_text.clear())
+        layout.addWidget(clear_logs_btn)
+        
+        return group
+    
+    def _create_display_area(self) -> QWidget:
+        """Crée la zone d'affichage des caméras"""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setStyleSheet("QScrollArea { border: 1px solid #ccc; }")
+        
+        # Widget conteneur pour la grille
         display_widget = QWidget()
         self.display_layout = QGridLayout(display_widget)
+        self.display_layout.setSpacing(10)
         
-        # Espacement configurable
-        grid_spacing = self.config.get('ui', 'camera_tab.layout.grid_spacing', 15)
-        self.display_layout.setSpacing(grid_spacing)
+        # Message d'aide initial
+        self.help_label = QLabel("""
+        <div style='text-align: center; color: #666; padding: 50px;'>
+            <h3>🎥 Gestion des Caméras</h3>
+            <p>1. Sélectionnez une caméra dans la liste</p>
+            <p>2. Cliquez sur "Ouvrir" pour l'initialiser</p>
+            <p>3. Utilisez "Démarrer" pour lancer l'acquisition</p>
+            <br>
+            <p><i>Aucune caméra ouverte actuellement</i></p>
+        </div>
+        """)
+        self.help_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.display_layout.addWidget(self.help_label, 0, 0)
         
-        # Label par défaut avec style configurable
-        default_text = self.config.get('ui', 'camera_tab.labels.no_camera_active', 
-                                     "Aucune caméra active\n\nSélectionnez et ouvrez une caméra\npour voir le streaming temps réel")
-        default_label = QLabel(default_text)
-        default_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # Style depuis configuration avec couleur configurable
-        text_color = self.config.get('ui', 'camera_display.colors.text_color', '#666')
-        default_border = self.config.get('ui', 'camera_display.colors.default_border', '#ccc')
-        background = self.config.get('ui', 'camera_display.colors.background', '#f9f9f9')
-        label_font_size = self.config.get('ui', 'camera_tab.display.default_label_font_size', 14)
-        label_padding = self.config.get('ui', 'camera_tab.display.default_label_padding', 50)
-        label_border_radius = self.config.get('ui', 'camera_tab.display.default_label_border_radius', 10)
-        
-        label_style = f"""
-            QLabel {{
-                font-size: {label_font_size}px;
-                color: {text_color};
-                border: 2px dashed {default_border};
-                border-radius: {label_border_radius}px;
-                padding: {label_padding}px;
-                background-color: {background};
-            }}
-        """
-        default_label.setStyleSheet(label_style)
-        self.display_layout.addWidget(default_label, 0, 0)
-        
-        scroll_area.setWidget(display_widget)
-        return scroll_area
+        area.setWidget(display_widget)
+        return area
     
     def _connect_signals(self):
-        """Connecte les signaux"""
-        self.detect_btn.clicked.connect(self._detect_cameras)
-        self.open_btn.clicked.connect(self._open_selected_camera)
-        self.close_btn.clicked.connect(self._close_selected_camera)
-        
-        self.start_stream_btn.clicked.connect(self._start_streaming)
-        self.stop_stream_btn.clicked.connect(self._stop_streaming)
-        
-        self.capture_btn.clicked.connect(self._capture_frame)
-        self.save_btn.clicked.connect(self._save_image)
-        
-        self.zoom_slider.valueChanged.connect(self._update_zoom)
-        self.show_depth_cb.toggled.connect(self._toggle_depth_view)
-        self.refresh_spinbox.valueChanged.connect(self._update_refresh_rate)
-        
-        self.camera_combo.currentTextChanged.connect(self._camera_selection_changed)
-        
-        self.clear_log_btn.clicked.connect(self.log_text.clear)
+        """Connecte les signaux internes"""
+        # Les signaux sont déjà connectés dans les méthodes de création
+        pass
     
     def _detect_cameras(self):
-        """Détecte toutes les caméras disponibles"""
-        detect_msg = self.config.get('ui', 'camera_tab.messages.detecting', "🔍 Détection des caméras...")
-        self._log(detect_msg)
+        """Détecte les caméras disponibles"""
+        self._log("🔍 Détection des caméras...")
         
         try:
-            self.available_cameras = self.camera_manager.detect_all_cameras()
+            self.available_cameras = self.camera_manager.detect_cameras()
+            self._update_camera_combo()
             
-            self.camera_combo.clear()
-            for camera in self.available_cameras:
-                display_name = f"{camera.name} ({camera.camera_type.value})"
-                self.camera_combo.addItem(display_name, camera)
+            cameras_found_msg = self.config.get('ui', 'camera_tab.messages.cameras_detected', 
+                                               "🔍 {count} caméra(s) détectée(s)")
+            self._log(cameras_found_msg.format(count=len(self.available_cameras)))
             
-            if self.available_cameras:
-                success_msg = self.config.get('ui', 'camera_tab.messages.cameras_found', 
-                                            "✅ {count} caméra(s) détectée(s)")
-                self._log(success_msg.format(count=len(self.available_cameras)))
-                self.open_btn.setEnabled(True)
-            else:
-                no_camera_msg = self.config.get('ui', 'camera_tab.messages.no_cameras', 
-                                               "⚠️ Aucune caméra détectée")
-                self._log(no_camera_msg)
-                self.open_btn.setEnabled(False)
-                
+            # Mise à jour des statistiques
+            self.cameras_label.setText(f"Caméras: {len(self.active_displays)}/{len(self.available_cameras)}")
+            
         except Exception as e:
-            error_msg = self.config.get('ui', 'camera_tab.messages.detection_error', 'Detection error: {error}')
+            error_msg = self.config.get('ui', 'camera_tab.messages.detection_error', 
+                                       "❌ Erreur détection caméras: {error}")
             self._log(error_msg.format(error=e))
     
-    def _camera_selection_changed(self):
-        """Gestion du changement de sélection"""
-        current_data = self.camera_combo.currentData()
-        self.selected_camera = current_data
+    def _update_camera_combo(self):
+        """Met à jour la combobox des caméras"""
+        self.camera_combo.clear()
         
-        if current_data:
-            select_msg = self.config.get('ui', 'camera_tab.messages.camera_selected', 
-                                        "📷 Caméra sélectionnée: {name}")
-            self._log(select_msg.format(name=current_data.name))
+        if not self.available_cameras:
+            self.camera_combo.addItem("Aucune caméra détectée")
+            self.camera_info_label.setText("Aucune caméra disponible")
+            return
+        
+        for camera in self.available_cameras:
+            display_name = f"{camera.camera_type.value}: {camera.name}"
+            self.camera_combo.addItem(display_name, camera)
+        
+        self.camera_info_label.setText(f"{len(self.available_cameras)} caméra(s) disponible(s)")
+    
+    def _on_camera_selected(self, text):
+        """Gestion de la sélection d'une caméra"""
+        camera_data = self.camera_combo.currentData()
+        
+        if camera_data and isinstance(camera_data, CameraInfo):
+            self.selected_camera = camera_data
+            self._update_controls_state()
             
-            has_depth = current_data.camera_type == CameraType.REALSENSE
-            self.show_depth_cb.setEnabled(has_depth)
+            # Mise à jour des informations
+            info_text = f"Type: {camera_data.camera_type.value}\n"
+            info_text += f"Nom: {camera_data.name}\n"
+            info_text += f"ID: {camera_data.device_id}"
+            self.camera_info_label.setText(info_text)
             
-            if not has_depth:
-                self.show_depth_cb.setChecked(False)
-                no_depth_tooltip = self.config.get('ui', 'camera_tab.tooltips.no_depth', 
-                                                  "Vue profondeur disponible uniquement avec RealSense")
-                self.show_depth_cb.setToolTip(no_depth_tooltip)
-            else:
-                depth_tooltip = self.config.get('ui', 'camera_tab.tooltips.depth_available', 
-                                               "Active la vue profondeur à côté de la vue RGB")
-                self.show_depth_cb.setToolTip(depth_tooltip)
+            selected_msg = self.config.get('ui', 'camera_tab.messages.camera_selected', 
+                                          "📷 Caméra sélectionnée: {name}")
+            self._log(selected_msg.format(name=camera_data.name))
+        else:
+            self.selected_camera = None
+            self.camera_info_label.setText("Sélectionnez une caméra")
+    
+    def _update_controls_state(self):
+        """Met à jour l'état des contrôles"""
+        has_camera = self.selected_camera is not None
+        is_open = False
+        
+        if has_camera:
+            alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+            is_open = self.camera_manager.is_camera_open(alias)
+        
+        # Boutons caméra
+        self.open_btn.setEnabled(has_camera and not is_open)
+        self.close_btn.setEnabled(has_camera and is_open)
+        
+        # Boutons streaming
+        has_open_cameras = len(self.active_displays) > 0
+        self.start_btn.setEnabled(has_open_cameras and not self.is_streaming)
+        self.stop_btn.setEnabled(has_open_cameras and self.is_streaming)
+        
+        # Boutons capture
+        self.capture_btn.setEnabled(has_camera and is_open)
+        self.save_btn.setEnabled(has_camera and is_open)
+        
+        # Options d'affichage
+        has_realsense = has_camera and self.selected_camera.camera_type == CameraType.REALSENSE
+        self.show_depth_cb.setEnabled(has_realsense)
     
     def _open_selected_camera(self):
         """Ouvre la caméra sélectionnée"""
         if not self.selected_camera:
-            no_selection_msg = self.config.get('ui', 'camera_tab.messages.no_selection', 
-                                              "⚠️ Aucune caméra sélectionnée")
-            self._log(no_selection_msg)
             return
+        
+        self._log(f"🔄 Ouverture caméra {self.selected_camera.name}...")
         
         try:
             alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
-            
-            if alias in self.active_displays:
-                already_open_msg = self.config.get('ui', 'camera_tab.messages.already_open', 
-                                                  "⚠️ Caméra {alias} déjà ouverte")
-                self._log(already_open_msg.format(alias=alias))
-                return
-            
-            opening_msg = self.config.get('ui', 'camera_tab.messages.opening', 
-                                         "📷 Ouverture {name}...")
-            self._log(opening_msg.format(name=self.selected_camera.name))
-            
-            success = self.camera_manager.open_camera(self.selected_camera, alias)
+            success = self.camera_manager.open_camera(alias, self.selected_camera)
             
             if success:
+                # Création widget d'affichage
                 display_widget = CameraDisplayWidget(alias, self.config)
-                display_widget.clicked.connect(self._camera_display_clicked)
-                
-                if self.show_depth_cb.isChecked():
-                    display_widget.set_depth_view(True)
+                display_widget.clicked.connect(lambda: self._camera_display_clicked(alias))
                 
                 self._add_camera_display(alias, display_widget)
                 self._update_controls_state()
                 
-                success_msg = self.config.get('ui', 'camera_tab.messages.opened_success', 
-                                             "✅ Caméra {alias} ouverte avec succès")
-                self._log(success_msg.format(alias=alias))
+                opened_msg = self.config.get('ui', 'camera_tab.messages.opened', 
+                                           "✅ Caméra {name} ouverte")
+                self._log(opened_msg.format(name=self.selected_camera.name))
+                
+                # Test de capture pour obtenir la résolution
+                self._test_camera_resolution(alias)
+                
             else:
                 failed_msg = self.config.get('ui', 'camera_tab.messages.open_failed', 
                                            "❌ Échec ouverture {name}")
                 self._log(failed_msg.format(name=self.selected_camera.name))
                 
         except Exception as e:
-            error_msg = self.config.get('ui', 'camera_tab.messages.open_error', 'Camera open error: {error}')
+            error_msg = self.config.get('ui', 'camera_tab.messages.open_error', 
+                                       'Erreur ouverture caméra: {error}')
             self._log(error_msg.format(error=e))
+    
+    def _test_camera_resolution(self, alias: str):
+        """Teste la résolution de la caméra"""
+        try:
+            ret, color_frame, depth_frame = self.camera_manager.get_camera_frame(alias)
+            if ret and color_frame is not None:
+                height, width = color_frame.shape[:2]
+                self.resolution_label.setText(f"Résolution: {width}x{height}")
+        except:
+            self.resolution_label.setText("Résolution: N/A")
     
     def _close_selected_camera(self):
         """Ferme la caméra sélectionnée"""
@@ -432,6 +455,8 @@ class CameraTab(QWidget):
     
     def _close_camera(self, alias: str):
         """Ferme une caméra spécifique"""
+        self._log(f"🔄 Fermeture caméra {alias}...")
+        
         try:
             success = self.camera_manager.close_camera(alias)
             
@@ -443,15 +468,22 @@ class CameraTab(QWidget):
                                             "✅ Caméra {alias} fermée")
                 self._log(closed_msg.format(alias=alias))
             else:
-                close_error_msg = self.config.get('ui', 'camera_tab.messages.close_error', 'Close error: {alias}')
+                close_error_msg = self.config.get('ui', 'camera_tab.messages.close_error', 
+                                                 'Erreur fermeture: {alias}')
                 self._log(close_error_msg.format(alias=alias))
                 
         except Exception as e:
-            close_exception_msg = self.config.get('ui', 'camera_tab.messages.close_exception', 'Close exception: {alias} - {error}')
+            close_exception_msg = self.config.get('ui', 'camera_tab.messages.close_exception', 
+                                                 'Exception fermeture: {alias} - {error}')
             self._log(close_exception_msg.format(alias=alias, error=e))
     
     def _add_camera_display(self, alias: str, display_widget: CameraDisplayWidget):
-        """Ajoute un widget d'affichage à la grille avec configuration"""
+        """Ajoute un widget d'affichage à la grille"""
+        # Suppression du message d'aide
+        if hasattr(self, 'help_label') and self.help_label.parent():
+            self.help_label.setParent(None)
+        
+        # Nettoyage grille si première caméra
         if not self.active_displays:
             for i in reversed(range(self.display_layout.count())):
                 item = self.display_layout.itemAt(i)
@@ -462,6 +494,7 @@ class CameraTab(QWidget):
         max_cols_single = self.config.get('ui', 'camera_tab.layout.max_columns_single', 3)
         max_cols_dual = self.config.get('ui', 'camera_tab.layout.max_columns_dual', 2)
         
+        # Adaptation selon vue profondeur
         cols = max_cols_dual if self.show_depth_cb.isChecked() else max_cols_single
         row = num_cameras // cols
         col = num_cameras % cols
@@ -470,8 +503,11 @@ class CameraTab(QWidget):
         self.active_displays[alias] = display_widget
         
         display_added_msg = self.config.get('ui', 'camera_tab.messages.display_added', 
-                                           "🖼️ Affichage {alias} ajouté (vue double: {dual})")
-        self._log(display_added_msg.format(alias=alias, dual=display_widget.show_depth))
+                                           "🖼️ Affichage {alias} ajouté")
+        self._log(display_added_msg.format(alias=alias))
+        
+        # Mise à jour statistiques
+        self.cameras_label.setText(f"Caméras: {len(self.active_displays)}/{len(self.available_cameras)}")
     
     def _remove_camera_display(self, alias: str):
         """Supprime un widget d'affichage"""
@@ -480,238 +516,204 @@ class CameraTab(QWidget):
             widget.setParent(None)
             del self.active_displays[alias]
             
+            # Réorganisation grille
             self._reorganize_display_grid()
             
-            display_removed_msg = self.config.get('ui', 'camera_tab.messages.display_removed', 
-                                                 "🖼️ Affichage {alias} supprimé")
-            self._log(display_removed_msg.format(alias=alias))
+            # Remettre l'aide si plus de caméras
+            if not self.active_displays:
+                self.display_layout.addWidget(self.help_label, 0, 0)
+            
+            # Mise à jour statistiques
+            self.cameras_label.setText(f"Caméras: {len(self.active_displays)}/{len(self.available_cameras)}")
     
     def _reorganize_display_grid(self):
         """Réorganise la grille d'affichage"""
         if not self.active_displays:
-            default_text = self.config.get('ui', 'camera_tab.labels.no_camera_active', 
-                                         "Aucune caméra active\n\nSélectionnez et ouvrez une caméra\npour voir le streaming temps réel")
-            default_label = QLabel(default_text)
-            default_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            
-            # Style configuré avec couleurs de la config
-            text_color = self.config.get('ui', 'camera_display.colors.text_color', '#666')
-            default_border = self.config.get('ui', 'camera_display.colors.default_border', '#ccc')
-            background = self.config.get('ui', 'camera_display.colors.background', '#f9f9f9')
-            label_font_size = self.config.get('ui', 'camera_tab.display.default_label_font_size', 14)
-            label_padding = self.config.get('ui', 'camera_tab.display.default_label_padding', 50)
-            label_border_radius = self.config.get('ui', 'camera_tab.display.default_label_border_radius', 10)
-            
-            label_style = f"""
-                QLabel {{
-                    font-size: {label_font_size}px;
-                    color: {text_color};
-                    border: 2px dashed {default_border};
-                    border-radius: {label_border_radius}px;
-                    padding: {label_padding}px;
-                    background-color: {background};
-                }}
-            """
-            default_label.setStyleSheet(label_style)
-            self.display_layout.addWidget(default_label, 0, 0)
             return
+            
+        # Nettoyage layout
+        for i in reversed(range(self.display_layout.count())):
+            item = self.display_layout.itemAt(i)
+            if item and item.widget() and item.widget() != self.help_label:
+                item.widget().setParent(None)
         
-        widgets = list(self.active_displays.values())
+        # Réajout dans l'ordre
         max_cols_single = self.config.get('ui', 'camera_tab.layout.max_columns_single', 3)
         max_cols_dual = self.config.get('ui', 'camera_tab.layout.max_columns_dual', 2)
-        
         cols = max_cols_dual if self.show_depth_cb.isChecked() else max_cols_single
         
-        for i, widget in enumerate(widgets):
+        for i, (alias, widget) in enumerate(self.active_displays.items()):
             row = i // cols
             col = i % cols
             self.display_layout.addWidget(widget, row, col)
     
     def _start_streaming(self):
-        """Démarre le streaming"""
-        if self.is_streaming or not self.active_displays:
+        """Démarre le streaming de toutes les caméras actives"""
+        if self.is_streaming:
+            return
+            
+        if not self.active_displays:
+            no_cameras_msg = self.config.get('ui', 'camera_tab.messages.no_cameras_streaming', 
+                                           "⚠️ Aucune caméra ouverte pour le streaming")
+            self._log(no_cameras_msg)
             return
         
-        try:
-            start_msg = self.config.get('ui', 'camera_tab.messages.starting_stream', 
-                                       "🎬 Démarrage du streaming...")
-            self._log(start_msg)
-            
-            self.camera_manager.start_streaming(self._on_new_frames)
-            
-            refresh_ms = self.refresh_spinbox.value()
-            self.update_timer.start(refresh_ms)
-            
-            stats_interval = self.config.get('ui', 'camera_tab.statistics.update_interval', 1000)
-            self.stats_timer.start(stats_interval)
-            
-            self.is_streaming = True
-            self._update_controls_state()
-            
-            started_msg = self.config.get('ui', 'camera_tab.messages.stream_started', 
-                                         "✅ Streaming démarré")
-            self._log(started_msg)
-            
-        except Exception as e:
-            start_error_msg = self.config.get('ui', 'camera_tab.messages.start_stream_error', 'Stream start error: {error}')
-            self._log(start_error_msg.format(error=e))
+        self.is_streaming = True
+        self.frame_count = 0
+        
+        # Démarrage timers
+        fps_target = self.fps_spinbox.value()
+        update_interval = int(1000 / fps_target)  # Conversion en ms
+        self.update_timer.start(update_interval)
+        
+        stats_interval = self.config.get('ui', 'camera_tab.timers.stats_interval_ms', 1000)
+        self.stats_timer.start(stats_interval)
+        
+        streaming_msg = self.config.get('ui', 'camera_tab.messages.streaming_started', 
+                                       "🎬 Streaming démarré à {fps} FPS")
+        self._log(streaming_msg.format(fps=fps_target))
+        
+        # Émission signal pour les autres onglets
+        if self.selected_camera:
+            alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+            self.camera_started.emit(alias)
+        
+        self._update_controls_state()
     
     def _stop_streaming(self):
         """Arrête le streaming"""
         if not self.is_streaming:
             return
+            
+        self.is_streaming = False
         
-        try:
-            stop_msg = self.config.get('ui', 'camera_tab.messages.stopping_stream', 
-                                      "🛑 Arrêt du streaming...")
-            self._log(stop_msg)
-            
-            self.update_timer.stop()
-            self.stats_timer.stop()
-            
-            self.camera_manager.stop_streaming()
-            
-            self.is_streaming = False
-            self._update_controls_state()
-            
-            stopped_msg = self.config.get('ui', 'camera_tab.messages.stream_stopped', 
-                                         "✅ Streaming arrêté")
-            self._log(stopped_msg)
-            
-        except Exception as e:
-            stop_error_msg = self.config.get('ui', 'camera_tab.messages.stop_stream_error', 'Stream stop error: {error}')
-            self._log(stop_error_msg.format(error=e))
-    
-    def _on_new_frames(self, frames_data: dict):
-        """Callback pour nouveaux frames"""
-        pass
+        # Arrêt timers
+        self.update_timer.stop()
+        self.stats_timer.stop()
+        
+        streaming_stopped_msg = self.config.get('ui', 'camera_tab.messages.streaming_stopped', 
+                                               "⏹️ Streaming arrêté")
+        self._log(streaming_stopped_msg)
+        
+        self._update_controls_state()
     
     def _update_camera_frames(self):
-        """Met à jour l'affichage des frames"""
-        if not self.is_streaming:
+        """Met à jour les frames des caméras"""
+        if not self.is_streaming or not self.active_displays:
             return
         
-        try:
-            all_frames = self.camera_manager.get_all_frames()
-            
-            for alias, (ret, color_frame, depth_frame) in all_frames.items():
-                if alias in self.active_displays and ret:
-                    display_widget = self.active_displays[alias]
-                    display_widget.update_frame(color_frame, depth_frame)
+        frames_updated = 0
+        start_time = time.time()
+        
+        for alias, display_widget in self.active_displays.items():
+            try:
+                ret, color_frame, depth_frame = self.camera_manager.get_camera_frame(alias)
+                
+                if ret and color_frame is not None:
+                    # Ajout overlays si activé
+                    if self.show_info_cb.isChecked():
+                        color_frame = self._add_info_overlay(color_frame, alias)
                     
-        except Exception as e:
-            frame_error_msg = self.config.get('ui', 'camera_tab.messages.frame_update_error', 'Frame update error: {error}')
-            self._log(frame_error_msg.format(error=e))
+                    display_widget.update_frame(color_frame, depth_frame)
+                    frames_updated += 1
+                    
+                    # Émission signal pour autres onglets
+                    frame_data = {
+                        'alias': alias,
+                        'color': color_frame,
+                        'depth': depth_frame,
+                        'timestamp': time.time()
+                    }
+                    self.frame_captured.emit(alias, frame_data)
+                    
+            except Exception as e:
+                logger.debug(f"Erreur mise à jour frame {alias}: {e}")
+        
+        self.frame_count += frames_updated
+        
+        # Calcul temps de traitement
+        processing_time = (time.time() - start_time) * 1000  # en ms
+        if processing_time > 50:  # Log si > 50ms
+            logger.debug(f"Temps traitement frames: {processing_time:.1f}ms")
+    
+    def _add_info_overlay(self, frame: np.ndarray, alias: str) -> np.ndarray:
+        """Ajoute des informations en overlay sur la frame"""
+        if not self.show_fps_cb.isChecked():
+            return frame
+        
+        # Informations à afficher
+        info_text = f"FPS: {self.current_fps:.1f}"
+        if self.show_info_cb.isChecked():
+            info_text += f" | {alias}"
+        
+        # Style depuis config
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = self.config.get('ui', 'camera_tab.overlay.font_scale', 0.6)
+        color = tuple(self.config.get('ui', 'camera_tab.overlay.text_color', [255, 255, 255]))
+        thickness = self.config.get('ui', 'camera_tab.overlay.thickness', 1)
+        
+        # Position
+        position = (10, 30)
+        
+        # Fond semi-transparent
+        text_size = cv2.getTextSize(info_text, font, font_scale, thickness)[0]
+        cv2.rectangle(frame, (5, 5), (text_size[0] + 15, text_size[1] + 15), (0, 0, 0), -1)
+        cv2.rectangle(frame, (5, 5), (text_size[0] + 15, text_size[1] + 15), (255, 255, 255), 1)
+        
+        # Texte
+        cv2.putText(frame, info_text, position, font, font_scale, color, thickness)
+        
+        return frame
     
     def _update_statistics(self):
-        """Met à jour les statistiques"""
-        if not self.show_stats_cb.isChecked():
-            return
-        
-        try:
-            all_stats = self.camera_manager.get_all_stats()
-            
-            if self.selected_camera:
-                alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
-                if alias in all_stats:
-                    self._display_camera_stats(all_stats[alias])
-            elif all_stats:
-                first_alias = next(iter(all_stats))
-                self._display_camera_stats(all_stats[first_alias])
-                
-        except Exception as e:
-            stats_error_msg = self.config.get('ui', 'camera_tab.messages.stats_error', 'Stats error: {error}')
-            self._log(stats_error_msg.format(error=e))
-    
-    def _display_camera_stats(self, stats: dict):
-        """Affiche les statistiques dans le tableau"""
-        self.stats_table.setRowCount(0)
-        
-        # Labels configurables pour les propriétés
-        name_label = self.config.get('ui', 'camera_tab.statistics.labels.name', "Nom")
-        type_label = self.config.get('ui', 'camera_tab.statistics.labels.type', "Type")
-        resolution_label = self.config.get('ui', 'camera_tab.statistics.labels.resolution', "Résolution")
-        fps_label = self.config.get('ui', 'camera_tab.statistics.labels.fps', "FPS actuel")
-        frames_label = self.config.get('ui', 'camera_tab.statistics.labels.frames', "Frames total")
-        timestamp_label = self.config.get('ui', 'camera_tab.statistics.labels.timestamp', "Dernière frame")
-        status_label = self.config.get('ui', 'camera_tab.statistics.labels.status', "État")
-        
-        # Unités configurables
-        pixels_unit = self.config.get('ui', 'camera_tab.statistics.units.pixels', "pixels")
-        fps_unit = self.config.get('ui', 'camera_tab.statistics.units.fps', "fps")
-        empty_unit = self.config.get('ui', 'camera_tab.statistics.units.empty', "")
-        
-        # Valeurs d'état configurables
-        active_text = self.config.get('ui', 'camera_tab.statistics.values.active', "Actif")
-        inactive_text = self.config.get('ui', 'camera_tab.statistics.values.inactive', "Inactif")
-        na_text = self.config.get('ui', 'camera_tab.statistics.values.na', "N/A")
-        
-        display_props = [
-            (name_label, stats.get('name', na_text), empty_unit),
-            (type_label, stats.get('type', na_text), empty_unit),
-            (resolution_label, stats.get('resolution', stats.get('color_resolution', na_text)), pixels_unit),
-            (fps_label, f"{stats.get('fps', 0):.1f}", fps_unit),
-            (frames_label, str(stats.get('frame_count', 0)), empty_unit),
-            (timestamp_label, time.strftime("%H:%M:%S", time.localtime(stats.get('last_timestamp', 0))), empty_unit),
-            (status_label, active_text if stats.get('is_active', False) else inactive_text, empty_unit)
-        ]
-        
-        if stats.get('type') == 'realsense':
-            depth_res = stats.get('depth_resolution', na_text)
-            if depth_res != na_text:
-                depth_label = self.config.get('ui', 'camera_tab.statistics.labels.depth', "Profondeur")
-                display_props.insert(3, (depth_label, depth_res, pixels_unit))
-        
-        for i, (prop, value, unit) in enumerate(display_props):
-            self.stats_table.insertRow(i)
-            self.stats_table.setItem(i, 0, QTableWidgetItem(prop))
-            self.stats_table.setItem(i, 1, QTableWidgetItem(str(value)))
-            self.stats_table.setItem(i, 2, QTableWidgetItem(unit))
-    
-    def _update_controls_state(self):
-        """Met à jour l'état des contrôles"""
-        has_cameras = len(self.active_displays) > 0
-        
-        self.close_btn.setEnabled(self.selected_camera is not None and has_cameras)
-        self.start_stream_btn.setEnabled(has_cameras and not self.is_streaming)
-        self.stop_stream_btn.setEnabled(self.is_streaming)
-        self.capture_btn.setEnabled(has_cameras and self.is_streaming)
-        self.save_btn.setEnabled(has_cameras)
-    
-    def _update_refresh_rate(self):
-        """Met à jour la fréquence de rafraîchissement"""
+        """Met à jour les statistiques d'affichage"""
         if self.is_streaming:
-            refresh_ms = self.refresh_spinbox.value()
-            self.update_timer.setInterval(refresh_ms)
-            
-            refresh_msg = self.config.get('ui', 'camera_tab.messages.refresh_rate', 
-                                         "🔄 Refresh rate: {fps:.1f} FPS")
-            fps_divisor = self.config.get('ui', 'camera_tab.controls.fps_divisor', 1000)
-            fps_value = fps_divisor / refresh_ms
-            self._log(refresh_msg.format(fps=fps_value))
-    
-    def _update_zoom(self):
-        """Met à jour le zoom de tous les affichages"""
-        zoom_value = self.zoom_slider.value()
-        zoom_divisor = self.config.get('ui', 'camera_tab.controls.zoom_divisor', 100.0)
-        zoom_factor = zoom_value / zoom_divisor
-        zoom_format = self.config.get('ui', 'camera_tab.labels.zoom_format', "{:.1f}x")
-        self.zoom_label.setText(zoom_format.format(zoom_factor))
+            # Calcul FPS basé sur l'intervalle de mise à jour
+            fps_target = self.fps_spinbox.value()
+            self.current_fps = fps_target if self.active_displays else 0.0
+        else:
+            self.current_fps = 0.0
         
+        # Mise à jour labels
+        self.fps_label.setText(f"FPS: {self.current_fps:.1f}")
+        self.cameras_label.setText(f"Caméras: {len(self.active_displays)}/{len(self.available_cameras)}")
+        self.frames_label.setText(f"Images: {self.frame_count}")
+    
+    def _on_fps_changed(self, value):
+        """Gestion du changement de FPS cible"""
+        self._log(f"🎬 FPS cible modifié: {value}")
+        
+        # Redémarrage avec nouveau FPS si streaming actif
+        if self.is_streaming:
+            self._stop_streaming()
+            self._start_streaming()
+    
+    def _on_zoom_changed(self, value):
+        """Gestion du changement de zoom"""
+        zoom_factor = value / 100.0
+        self.zoom_label.setText(f"{value}%")
+        
+        # Application zoom à tous les affichages
         for display_widget in self.active_displays.values():
             display_widget.set_zoom(zoom_factor)
+        
+        zoom_msg = self.config.get('ui', 'camera_tab.messages.zoom_changed', 
+                                   "🔍 Zoom modifié: {zoom}%")
+        self._log(zoom_msg.format(zoom=value))
     
     def _toggle_depth_view(self):
-        """Bascule l'affichage profondeur pour toutes les caméras"""
+        """Bascule l'affichage profondeur"""
         show_depth = self.show_depth_cb.isChecked()
         
         for alias, display_widget in self.active_displays.items():
+            # Vérification que la caméra supporte la profondeur
             cam_data = self.camera_combo.currentData()
             if cam_data and cam_data.camera_type == CameraType.REALSENSE:
                 display_widget.set_depth_view(show_depth)
             else:
                 display_widget.set_depth_view(False)
         
+        # Réorganisation grille si nécessaire
         self._reorganize_display_grid()
         
         depth_msg = self.config.get('ui', 'camera_tab.messages.depth_toggled', 
@@ -721,18 +723,27 @@ class CameraTab(QWidget):
         state = enabled_text if show_depth else disabled_text
         self._log(depth_msg.format(state=state))
     
+    def _toggle_info_overlay(self):
+        """Bascule l'affichage des informations en overlay"""
+        show_info = self.show_info_cb.isChecked()
+        
+        info_msg = self.config.get('ui', 'camera_tab.messages.info_overlay_toggled',
+                                   "📊 Overlay informations: {state}")
+        state = "Activé" if show_info else "Désactivé"
+        self._log(info_msg.format(state=state))
+    
     def _camera_display_clicked(self, alias: str):
-        """Gestion du clic sur un affichage"""
+        """Gestion clic sur affichage caméra"""
         click_msg = self.config.get('ui', 'camera_tab.messages.camera_clicked', 
                                    "🖱️ Clic sur caméra: {alias}")
         self._log(click_msg.format(alias=alias))
         self.camera_selected.emit(alias)
     
     def _capture_frame(self):
-        """Capture une frame de la caméra sélectionnée"""
+        """Capture une frame"""
         if not self.selected_camera:
             no_camera_msg = self.config.get('ui', 'camera_tab.messages.no_camera_capture', 
-                                           "⚠️ Aucune caméra sélectionnée pour la capture")
+                                           "⚠️ Aucune caméra sélectionnée")
             self._log(no_camera_msg)
             return
         
@@ -755,18 +766,19 @@ class CameraTab(QWidget):
                 self._log(capture_msg.format(alias=alias))
             else:
                 capture_failed_msg = self.config.get('ui', 'camera_tab.messages.capture_failed', 
-                                                    "❌ Impossible de capturer une frame de {alias}")
+                                                    "❌ Impossible de capturer: {alias}")
                 self._log(capture_failed_msg.format(alias=alias))
                 
         except Exception as e:
-            capture_error_msg = self.config.get('ui', 'camera_tab.messages.capture_error', 'Capture error: {error}')
+            capture_error_msg = self.config.get('ui', 'camera_tab.messages.capture_error', 
+                                               'Erreur capture: {error}')
             self._log(capture_error_msg.format(error=e))
     
     def _save_image(self):
-        """Sauvegarde l'image de la caméra sélectionnée"""
+        """Sauvegarde l'image courante"""
         if not self.selected_camera:
             no_camera_save_msg = self.config.get('ui', 'camera_tab.messages.no_camera_save', 
-                                                "⚠️ Aucune caméra sélectionnée pour la sauvegarde")
+                                                "⚠️ Aucune caméra pour sauvegarde")
             self._log(no_camera_save_msg)
             return
         
@@ -787,84 +799,145 @@ class CameraTab(QWidget):
         if filepath:
             alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
             
-            success = self.camera_manager.save_camera_frame(alias, filepath)
-            
-            if success:
-                save_success_msg = self.config.get('ui', 'camera_tab.messages.save_success', 
-                                                  "💾 Image RGB sauvegardée: {filepath}")
-                self._log(save_success_msg.format(filepath=filepath))
+            try:
+                # Tentative sauvegarde via camera_manager
+                if hasattr(self.camera_manager, 'save_camera_frame'):
+                    success = self.camera_manager.save_camera_frame(alias, filepath)
+                else:
+                    # Fallback: capture et sauvegarde manuelle
+                    ret, color_frame, depth_frame = self.camera_manager.get_camera_frame(alias)
+                    if ret and color_frame is not None:
+                        success = cv2.imwrite(filepath, color_frame)
+                    else:
+                        success = False
                 
-                if (self.show_depth_cb.isChecked() and 
-                    self.selected_camera.camera_type == CameraType.REALSENSE):
+                if success:
+                    save_success_msg = self.config.get('ui', 'camera_tab.messages.save_success', 
+                                                      "💾 Image sauvée: {filepath}")
+                    self._log(save_success_msg.format(filepath=filepath))
                     
-                    depth_suffix = self.config.get('ui', 'camera_tab.save.depth_suffix', '_depth')
-                    depth_ext = self.config.get('ui', 'camera_tab.save.depth_extension', '.png')
-                    depth_filepath = filepath.replace('.jpg', f'{depth_suffix}{depth_ext}').replace('.png', f'{depth_suffix}{depth_ext}')
-                    ret, _, depth_frame = self.camera_manager.get_camera_frame(alias)
+                    # Sauvegarde profondeur si disponible et activée
+                    if (self.show_depth_cb.isChecked() and 
+                        self.selected_camera.camera_type == CameraType.REALSENSE):
+                        
+                        depth_suffix = self.config.get('ui', 'camera_tab.save.depth_suffix', '_depth')
+                        depth_ext = self.config.get('ui', 'camera_tab.save.depth_extension', '.png')
+                        
+                        # Génération nom fichier profondeur
+                        base_name = filepath.rsplit('.', 1)[0]
+                        depth_filepath = f"{base_name}{depth_suffix}{depth_ext}"
+                        
+                        ret, _, depth_frame = self.camera_manager.get_camera_frame(alias)
+                        
+                        if ret and depth_frame is not None:
+                            cv2.imwrite(depth_filepath, depth_frame)
+                            depth_save_msg = self.config.get('ui', 'camera_tab.messages.depth_save_success', 
+                                                            "🗂️ Image profondeur sauvée: {filepath}")
+                            self._log(depth_save_msg.format(filepath=depth_filepath))
+                else:
+                    save_failed_msg = self.config.get('ui', 'camera_tab.messages.save_failed', 
+                                                     "❌ Échec sauvegarde: {filepath}")
+                    self._log(save_failed_msg.format(filepath=filepath))
                     
-                    if ret and depth_frame is not None:
-                        cv2.imwrite(depth_filepath, depth_frame)
-                        depth_save_msg = self.config.get('ui', 'camera_tab.messages.depth_save_success', 
-                                                        "💾 Image profondeur sauvegardée: {filepath}")
-                        self._log(depth_save_msg.format(filepath=depth_filepath))
-            else:
-                save_error_msg = self.config.get('ui', 'camera_tab.messages.save_error', 'Save error: {filepath}')
-                self._log(save_error_msg.format(filepath=filepath))
+            except Exception as e:
+                save_error_msg = self.config.get('ui', 'camera_tab.messages.save_error',
+                                                'Erreur sauvegarde: {error}')
+                self._log(save_error_msg.format(error=e))
     
     def _log(self, message: str):
-        """Ajoute un message au log avec timestamp"""
-        timestamp_format = self.config.get('ui', 'camera_tab.log.timestamp_format', "%H:%M:%S")
-        message_format = self.config.get('ui', 'camera_tab.log.message_format', "[{timestamp}] {message}")
+        """Affiche un message dans le log"""
+        timestamp = time.strftime("%H:%M:%S")
+        formatted_msg = f"[{timestamp}] {message}"
         
-        timestamp = time.strftime(timestamp_format)
-        formatted_message = message_format.format(timestamp=timestamp, message=message)
+        self.log_text.append(formatted_msg)
         
-        self.log_text.append(formatted_message)
-        
-        self.log_text.verticalScrollBar().setValue(
-            self.log_text.verticalScrollBar().maximum()
-        )
-        
+        # Limitation du nombre de lignes
         max_lines = self.config.get('ui', 'camera_tab.log.max_lines', 100)
-        if self.log_text.document().blockCount() > max_lines:
+        
+        # Nettoyage si trop de lignes
+        document = self.log_text.document()
+        if document.blockCount() > max_lines:
             cursor = self.log_text.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
             cursor.select(cursor.SelectionType.BlockUnderCursor)
             cursor.removeSelectedText()
-    
-    def closeEvent(self, event):
-        """Nettoyage lors de la fermeture"""
-        try:
-            self._stop_streaming()
-            self.camera_manager.close_all_cameras()
-            
-            cleanup_msg = self.config.get('ui', 'camera_tab.messages.cleanup', 
-                                         "🔄 Nettoyage terminé")
-            self._log(cleanup_msg)
-        except Exception as e:
-            logger.error(f"Erreur nettoyage: {e}")
         
-        event.accept()
+        # Scroll vers le bas
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        
+        # Log aussi dans le système de logging Python
+        logger.info(message)
     
-    # === Méthodes publiques pour intégration ===
+    # Méthodes publiques pour intégration avec MainWindow
     
-    def get_active_cameras(self) -> dict:
-        """Retourne les caméras actives"""
-        return {alias: data['info'] for alias, data in self.camera_manager.active_cameras.items()}
+    def start_acquisition(self):
+        """Démarre l'acquisition (alias pour _start_streaming)"""
+        self._start_streaming()
     
-    def get_camera_intrinsics(self, alias: str) -> dict:
-        """Récupère les paramètres intrinsèques d'une caméra"""
-        return self.camera_manager.get_camera_intrinsics(alias)
+    def stop_acquisition(self):
+        """Arrête l'acquisition (alias pour _stop_streaming)"""
+        self._stop_streaming()
     
-    def is_camera_streaming(self) -> bool:
-        """Indique si le streaming est actif"""
+    def get_active_cameras(self) -> list:
+        """Retourne la liste des caméras actives"""
+        return list(self.active_displays.keys())
+    
+    def get_current_fps(self) -> float:
+        """Retourne le FPS actuel"""
+        return self.current_fps
+    
+    def is_acquiring(self) -> bool:
+        """Retourne True si acquisition en cours"""
         return self.is_streaming
     
-    def get_current_frame(self, alias: str) -> tuple:
-        """Récupère la frame actuelle d'une caméra"""
-        return self.camera_manager.get_camera_frame(alias)
+    def get_camera_frame(self, alias: str = None):
+        """Récupère une frame de caméra"""
+        if alias is None and self.selected_camera:
+            alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+        
+        if alias and alias in self.active_displays:
+            return self.camera_manager.get_camera_frame(alias)
+        
+        return False, None, None
     
-    def set_depth_view_enabled(self, enabled: bool):
-        """Active/désactive la vue profondeur pour toutes les caméras compatibles"""
-        self.show_depth_cb.setChecked(enabled)
-        self._toggle_depth_view()
+    # Méthodes de nettoyage
+    
+    def cleanup(self):
+        """Nettoyage lors de la fermeture"""
+        try:
+            # Arrêt streaming
+            self._stop_streaming()
+            
+            # Fermeture caméras seulement si on possède le camera_manager
+            if self.owns_camera_manager and hasattr(self, 'camera_manager'):
+                self.camera_manager.close_all_cameras()
+                logger.info("📷 Caméras fermées par CameraTab")
+            else:
+                logger.info("📷 Camera_manager externe - pas de fermeture automatique")
+                
+            # Nettoyage widgets
+            for alias in list(self.active_displays.keys()):
+                self._remove_camera_display(alias)
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur cleanup CameraTab: {e}")
+    
+    def closeEvent(self, event):
+        """Gestion de la fermeture de l'onglet"""
+        self.cleanup()
+        event.accept()
+    
+    # Propriétés pour compatibilité
+    
+    @property 
+    def current_camera_alias(self) -> str:
+        """Retourne l'alias de la caméra courante"""
+        if self.selected_camera:
+            return f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+        return ""
+    
+    @property
+    def has_active_cameras(self) -> bool:
+        """Retourne True si des caméras sont actives"""
+        return len(self.active_displays) > 0
