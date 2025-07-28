@@ -1,38 +1,124 @@
 {
-  "aruco": {
-    "dictionary": "DICT_5X5_100",
-    "marker_size": 0.05,
-    "detection_params": {
-      "adaptiveThreshWinSizeMin": 3,
-      "adaptiveThreshWinSizeMax": 23,
-      "adaptiveThreshWinSizeStep": 10,
-      "minMarkerPerimeterRate": 0.03,
-      "maxMarkerPerimeterRate": 4.0
+  "_file_info": {
+    "file_path": "config/tracking_config.json",
+    "version": "1.1", 
+    "modification": "Extension du tracking_config.json existant pour l'onglet Cible"
+  },
+  
+  "target_detection": {
+    "aruco": {
+      "auto_detect_folder": true,
+      "default_markers_folder": "./ArUco",
+      "config_file_name": "markers_config.json",
+      "supported_extensions": [".png", ".jpg", ".jpeg"],
+      "detection_params": {
+        "adaptiveThreshWinSizeMin": 3,
+        "adaptiveThreshWinSizeMax": 23,
+        "adaptiveThreshWinSizeStep": 10,
+        "adaptiveThreshConstant": 7,
+        "minMarkerPerimeterRate": 0.03,
+        "maxMarkerPerimeterRate": 4.0,
+        "polygonalApproxAccuracyRate": 0.03,
+        "minCornerDistanceRate": 0.05,
+        "minDistanceToBorder": 3,
+        "markerBorderBits": 1,
+        "perspectiveRemovePixelPerCell": 4,
+        "perspectiveRemoveIgnoredMarginPerCell": 0.13,
+        "maxErroneousBitsInBorderRate": 0.35,
+        "minOtsuStdDev": 5.0,
+        "errorCorrectionRate": 0.6
+      }
+    },
+    "reflective_markers": {
+      "enabled": true,
+      "hsv_ranges": {
+        "lower": [0, 0, 200],
+        "upper": [180, 30, 255]
+      },
+      "morphology": {
+        "kernel_size": 5,
+        "iterations": 2
+      },
+      "contour_filters": {
+        "min_area": 50,
+        "max_area": 5000,
+        "min_circularity": 0.7,
+        "min_convexity": 0.8
+      }
+    },
+    "led_markers": {
+      "enabled": true,
+      "color_presets": {
+        "red": {"h": [0, 10], "s": [50, 255], "v": [50, 255]},
+        "green": {"h": [40, 80], "s": [50, 255], "v": [50, 255]},
+        "blue": {"h": [100, 130], "s": [50, 255], "v": [50, 255]},
+        "yellow": {"h": [20, 30], "s": [50, 255], "v": [50, 255]},
+        "cyan": {"h": [80, 100], "s": [50, 255], "v": [50, 255]},
+        "magenta": {"h": [140, 180], "s": [50, 255], "v": [50, 255]}
+      },
+      "detection_params": {
+        "gaussian_blur_size": 5,
+        "morphology_kernel": 3,
+        "morphology_iterations": 2,
+        "min_contour_area": 30,
+        "max_contour_area": 2000
+      }
     }
   },
-  "reflective_markers": {
-    "enabled": true,
-    "hsv_lower": [
-      0,
-      0,
-      200
-    ],
-    "hsv_upper": [
-      180,
-      30,
-      255
-    ],
-    "min_area": 50,
-    "max_area": 5000
-  },
-  "kalman_filter": {
-    "enabled": true,
-    "process_noise": 0.01,
-    "measurement_noise": 0.1
-  },
-  "precision": {
-    "target_accuracy_mm": 1.0,
-    "max_deviation_mm": 2.0,
-    "repeatability_mm": 0.5
+  
+  "target_tab_ui": {
+    "window": {
+      "title": "Onglet Cible - Robot Tracker",
+      "update_interval_ms": 33,
+      "ui_refresh_rate": 30,
+      "control_panel_width": 320,
+      "video_display_min_height": 480
+    },
+    "roi": {
+      "enabled": true,
+      "default_type": "rectangle",
+      "line_thickness": 2,
+      "selection_handles_size": 8,
+      "snap_distance": 10,
+      "max_roi_count": 10
+    },
+    "display": {
+      "colors": {
+        "aruco_detection": [0, 255, 0],
+        "aruco_id_text": [255, 255, 255],
+        "reflective_detection": [255, 0, 0],
+        "led_detection": [0, 0, 255],
+        "roi_active": [255, 255, 0],
+        "roi_inactive": [128, 128, 128],
+        "trajectory_line": [255, 165, 0],
+        "prediction_line": [0, 255, 255]
+      },
+      "fonts": {
+        "marker_id": {"size": 12, "bold": true, "thickness": 2},
+        "statistics": {"size": 10, "bold": false, "thickness": 1},
+        "status": {"size": 9, "bold": false, "thickness": 1}
+      },
+      "overlays": {
+        "show_marker_ids": true,
+        "show_confidence": true,
+        "show_fps": true,
+        "show_detection_count": true,
+        "show_roi_info": true
+      }
+    },
+    "export": {
+      "formats": ["csv", "json", "xml"],
+      "default_format": "csv",
+      "include_timestamps": true,
+      "include_confidence": true,
+      "include_roi_data": true,
+      "auto_save_interval": 300
+    },
+    "performance": {
+      "max_fps": 30,
+      "skip_frames_on_lag": true,
+      "max_detection_time_ms": 50,
+      "memory_cleanup_interval": 100
+    }
   }
 }
