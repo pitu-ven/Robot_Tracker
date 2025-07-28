@@ -1,6 +1,6 @@
 # core/camera_manager.py
-# Version 2.7 - Ajout méthode detect_cameras manquante pour compatibilité camera_tab
-# Modification: Ajout alias detect_cameras pour detect_all_cameras
+# Version 2.8 - Ajout méthode is_camera_open manquante
+# Modification: Ajout méthode is_camera_open pour compatibilité camera_tab
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -48,7 +48,7 @@ class CameraInfo:
     details: Dict[str, Any]
 
 class CameraManager:
-    """Gestionnaire central pour toutes les caméras - Version avec detect_cameras"""
+    """Gestionnaire central pour toutes les caméras - Version avec is_camera_open"""
     
     def __init__(self, config):
         self.config = config
@@ -77,7 +77,7 @@ class CameraManager:
         self.auto_detect_interval = self.config.get('camera', 'manager.auto_detect_interval', 5.0)
         self.max_frame_buffer = self.config.get('camera', 'manager.max_frame_buffer', 5)
         
-        logger.info("🎥 CameraManager v2.7 initialisé (configuration complète)")
+        logger.info("🎥 CameraManager v2.8 initialisé (méthode is_camera_open ajoutée)")
     
     def detect_all_cameras(self) -> List[CameraInfo]:
         """Détecte toutes les caméras disponibles (USB3 + RealSense) avec évitement des doublons"""
@@ -141,6 +141,11 @@ class CameraManager:
     def detect_cameras(self) -> List[CameraInfo]:
         """Alias pour detect_all_cameras pour compatibilité avec camera_tab"""
         return self.detect_all_cameras()
+    
+    def is_camera_open(self, alias: str) -> bool:
+        """Vérifie si une caméra est ouverte"""
+        with self.cameras_lock:
+            return alias in self.active_cameras
     
     def open_camera(self, camera_info: CameraInfo, alias: str = None) -> bool:
         """Ouvre une caméra spécifique"""
