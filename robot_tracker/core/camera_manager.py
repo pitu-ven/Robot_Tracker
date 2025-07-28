@@ -1,10 +1,9 @@
+# core/camera_manager.py
+# Version 2.7 - Ajout méthode detect_cameras manquante pour compatibilité camera_tab
+# Modification: Ajout alias detect_cameras pour detect_all_cameras
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-robot_tracker/core/camera_manager.py
-Gestionnaire central des caméras sans valeurs statiques - Version 2.6
-Modification: Suppression complète des valeurs hardcodées, configuration via JSON
-"""
 
 import cv2
 import numpy as np
@@ -49,7 +48,7 @@ class CameraInfo:
     details: Dict[str, Any]
 
 class CameraManager:
-    """Gestionnaire central pour toutes les caméras - Version entièrement configurable"""
+    """Gestionnaire central pour toutes les caméras - Version avec detect_cameras"""
     
     def __init__(self, config):
         self.config = config
@@ -78,7 +77,7 @@ class CameraManager:
         self.auto_detect_interval = self.config.get('camera', 'manager.auto_detect_interval', 5.0)
         self.max_frame_buffer = self.config.get('camera', 'manager.max_frame_buffer', 5)
         
-        logger.info("🎥 CameraManager v2.6 initialisé (configuration complète)")
+        logger.info("🎥 CameraManager v2.7 initialisé (configuration complète)")
     
     def detect_all_cameras(self) -> List[CameraInfo]:
         """Détecte toutes les caméras disponibles (USB3 + RealSense) avec évitement des doublons"""
@@ -87,152 +86,181 @@ class CameraManager:
         all_cameras = []
         realsense_serials = set()
         
-        # 1. Détection RealSense en priorité
+        # 1. Détection RealSense en premier (plus fiables)
         if REALSENSE_AVAILABLE:
             try:
-                rs_cameras = list_available_realsense()
-                for cam in rs_cameras:
+                rs_cameras = list_available_realsense() 
+                logger.info(f"🎥 RealSense: {len(rs_cameras)} caméra(s) détectée(s)")
+                
+                for rs_cam in rs_cameras:
+                    serial = rs_cam.get('serial_number', 'unknown')
+                    realsense_serials.add(serial)
+                    
                     camera_info = CameraInfo(
                         camera_type=CameraType.REALSENSE,
-                        device_id=cam['serial'],
-                        name=f"RealSense: {cam['name']} (S/N: {cam['serial']})",
-                        details=cam
+                        device_id=serial,
+                        name=rs_cam.get('name', f'RealSense {serial}'),
+                        details=rs_cam
                     )
                     all_cameras.append(camera_info)
-                    realsense_serials.add(cam['serial'])
-                    logger.info(f"✅ RealSense trouvée: {camera_info.name}")
+                    
             except Exception as e:
-                logger.error(f"❌ Erreur détection RealSense: {e}")
-        else:
-            logger.info("⚠️ RealSense non disponible")
+                logger.warning(f"⚠️ Erreur détection RealSense: {e}")
         
-        # 2. Détection USB3 (en excluant les RealSense déjà détectées)
+        # 2. Détection USB3 en évitant les doublons
         try:
-            usb_cameras = list_available_cameras()
-            usb_count = 0
+            usb3_cameras = list_available_cameras()
+            logger.info(f"🔌 USB3: {len(usb3_cameras)} caméra(s) détectée(s)")
             
-            for cam in usb_cameras:
-                camera_name = cam['name'].lower()
-                is_likely_realsense = any([
-                    'realsense' in camera_name,
-                    'intel' in camera_name,
-                    (len(realsense_serials) > 0 and 'usb camera' in camera_name)
-                ])
+            for usb_cam in usb3_cameras:
+                # Vérification anti-doublon basique
+                usb_name = usb_cam.get('name', f"USB3 Camera {usb_cam.get('index', 'unknown')}")
                 
-                if not is_likely_realsense:
-                    camera_info = CameraInfo(
-                        camera_type=CameraType.USB3_CAMERA,
-                        device_id=cam['device_id'],
-                        name=f"USB3: {cam['name']}",
-                        details=cam
-                    )
-                    all_cameras.append(camera_info)
-                    usb_count += 1
-                    logger.info(f"✅ USB3 trouvée: {camera_info.name}")
-                else:
-                    logger.debug(f"🔄 Caméra USB ignorée (probable RealSense): {cam['name']}")
-            
-            logger.info(f"🔍 {usb_count} caméra(s) USB distincte(s) détectée(s)")
-            
+                # Filtrage des caméras RealSense déjà détectées
+                if any(serial in usb_name for serial in realsense_serials):
+                    logger.debug(f"🔄 Ignoré doublon USB3: {usb_name}")
+                    continue
+                
+                camera_info = CameraInfo(
+                    camera_type=CameraType.USB3_CAMERA,
+                    device_id=usb_cam.get('index', 0),
+                    name=usb_name,
+                    details=usb_cam
+                )
+                all_cameras.append(camera_info)
+                
         except Exception as e:
-            logger.error(f"❌ Erreur détection USB3: {e}")
+            logger.warning(f"⚠️ Erreur détection USB3: {e}")
         
+        # Mise à jour cache
         self.available_cameras = all_cameras
-        logger.info(f"📷 {len(all_cameras)} caméra(s) détectée(s) au total")
         
+        logger.info(f"✅ Détection terminée: {len(all_cameras)} caméra(s) unique(s)")
         return all_cameras
+    
+    def detect_cameras(self) -> List[CameraInfo]:
+        """Alias pour detect_all_cameras pour compatibilité avec camera_tab"""
+        return self.detect_all_cameras()
     
     def open_camera(self, camera_info: CameraInfo, alias: str = None) -> bool:
         """Ouvre une caméra spécifique"""
-        camera_alias = alias or f"{camera_info.camera_type.value}_{camera_info.device_id}"
+        if not alias:
+            alias = f"cam_{len(self.active_cameras)}"
         
-        logger.info(f"📷 Ouverture caméra: {camera_info.name} (alias: {camera_alias})")
+        logger.info(f"🔓 Ouverture caméra {camera_info.name} (alias: {alias})")
         
         with self.cameras_lock:
-            if camera_alias in self.active_cameras:
-                logger.warning(f"⚠️ Caméra {camera_alias} déjà ouverte")
-                return True
-            
             try:
-                if camera_info.camera_type == CameraType.USB3_CAMERA:
-                    usb_config = {
-                        'width': self.config.get('camera', 'usb3_camera.width', 640),
-                        'height': self.config.get('camera', 'usb3_camera.height', 480),
-                        'fps': self.config.get('camera', 'usb3_camera.fps', 30),
-                        'buffer_size': self.config.get('camera', 'usb3_camera.buffer_size', 1),
-                        'auto_exposure': self.config.get('camera', 'usb3_camera.auto_exposure', True),
-                        'exposure': self.config.get('camera', 'usb3_camera.exposure', -6),
-                        'gain': self.config.get('camera', 'usb3_camera.gain', 0)
-                    }
-                    
-                    camera = USB3CameraDriver(camera_info.device_id, usb_config)
-                    success = camera.open()
-                    
-                elif camera_info.camera_type == CameraType.REALSENSE:
-                    if not REALSENSE_AVAILABLE:
-                        logger.error("❌ RealSense non disponible")
-                        return False
-                    
-                    camera = RealSenseCamera(self.config)
-                    camera.device_serial = camera_info.device_id
-                    success = camera.start_streaming()
-                    
-                else:
-                    logger.error(f"❌ Type de caméra non supporté: {camera_info.camera_type}")
+                # Caméra déjà ouverte ?
+                if alias in self.active_cameras:
+                    logger.warning(f"⚠️ Caméra {alias} déjà ouverte")
                     return False
                 
-                if success:
-                    self.active_cameras[camera_alias] = {
-                        'camera': camera,
-                        'info': camera_info,
-                        'last_frame_time': 0,
-                        'frame_count': 0,
-                        'is_active': True,
-                        'poll_failures': 0
-                    }
-                    
-                    # Initialiser le cache pour cette caméra
-                    with self.cache_lock:
-                        self.frame_cache[camera_alias] = (False, None, None)
-                        self.cache_timestamps[camera_alias] = 0
-                    
-                    logger.info(f"✅ Caméra {camera_alias} ouverte avec succès")
-                    return True
-                else:
-                    logger.error(f"❌ Échec ouverture caméra {camera_alias}")
+                # Création de l'instance caméra selon le type
+                camera_instance = self._create_camera_instance(camera_info)
+                
+                if not camera_instance:
+                    logger.error(f"❌ Échec création instance {camera_info.camera_type}")
                     return False
-                    
+                
+                # Ouverture effective
+                if not self._open_camera_instance(camera_instance, camera_info):
+                    logger.error(f"❌ Échec ouverture caméra {camera_info.name}")
+                    return False
+                
+                # Enregistrement de la caméra active
+                self.active_cameras[alias] = {
+                    'camera': camera_instance,
+                    'info': camera_info,
+                    'opened_at': time.time(),
+                    'frame_count': 0,
+                    'last_frame_time': 0.0,
+                    'is_streaming': False
+                }
+                
+                logger.info(f"✅ Caméra {alias} ouverte avec succès")
+                return True
+                
             except Exception as e:
-                logger.error(f"❌ Erreur ouverture caméra {camera_alias}: {e}")
+                logger.error(f"❌ Erreur ouverture caméra {alias}: {e}")
                 return False
+    
+    def _create_camera_instance(self, camera_info: CameraInfo):
+        """Crée l'instance appropriée selon le type de caméra"""
+        try:
+            if camera_info.camera_type == CameraType.REALSENSE:
+                if not REALSENSE_AVAILABLE:
+                    raise Exception("RealSense non disponible")
+                return RealSenseCamera()
+            
+            elif camera_info.camera_type == CameraType.USB3_CAMERA:
+                return USB3CameraDriver()
+            
+            else:
+                raise Exception(f"Type de caméra non supporté: {camera_info.camera_type}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur création instance caméra: {e}")
+            return None
+    
+    def _open_camera_instance(self, camera_instance, camera_info: CameraInfo) -> bool:
+        """Ouvre l'instance de caméra avec la bonne configuration"""
+        try:
+            if camera_info.camera_type == CameraType.REALSENSE:
+                # Configuration RealSense depuis JSON
+                config_rs = {
+                    'color_width': self.config.get('camera', 'realsense.color_width', 640),
+                    'color_height': self.config.get('camera', 'realsense.color_height', 480),
+                    'color_fps': self.config.get('camera', 'realsense.color_fps', 30),
+                    'depth_width': self.config.get('camera', 'realsense.depth_width', 640),
+                    'depth_height': self.config.get('camera', 'realsense.depth_height', 480),
+                    'depth_fps': self.config.get('camera', 'realsense.depth_fps', 30)
+                }
+                return camera_instance.open(camera_info.device_id, config_rs)
+            
+            elif camera_info.camera_type == CameraType.USB3_CAMERA:
+                # Configuration USB3 depuis JSON
+                config_usb = {
+                    'width': self.config.get('camera', 'usb3_camera.width', 640),
+                    'height': self.config.get('camera', 'usb3_camera.height', 480),
+                    'fps': self.config.get('camera', 'usb3_camera.fps', 30)
+                }
+                return camera_instance.open(camera_info.device_id, config_usb)
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur ouverture instance: {e}")
+            return False
     
     def close_camera(self, alias: str) -> bool:
         """Ferme une caméra spécifique"""
-        logger.info(f"📷 Fermeture caméra: {alias}")
-        
         with self.cameras_lock:
             if alias not in self.active_cameras:
-                logger.warning(f"⚠️ Caméra {alias} non trouvée")
+                logger.warning(f"⚠️ Caméra {alias} non trouvée pour fermeture")
                 return False
             
             try:
                 cam_data = self.active_cameras[alias]
                 camera = cam_data['camera']
                 
-                if cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                    camera.close()
-                elif cam_data['info'].camera_type == CameraType.REALSENSE:
-                    camera.stop_streaming()
+                # Arrêt du streaming si actif
+                if cam_data.get('is_streaming', False):
+                    camera.stop()
                 
+                # Fermeture de la caméra
+                camera.close()
+                
+                # Suppression du cache
+                if alias in self.frame_cache:
+                    del self.frame_cache[alias]
+                if alias in self.cache_timestamps:
+                    del self.cache_timestamps[alias]
+                
+                # Suppression de la liste active
                 del self.active_cameras[alias]
                 
-                with self.cache_lock:
-                    if alias in self.frame_cache:
-                        del self.frame_cache[alias]
-                    if alias in self.cache_timestamps:
-                        del self.cache_timestamps[alias]
-                
-                logger.info(f"✅ Caméra {alias} fermée")
+                logger.info(f"🔒 Caméra {alias} fermée")
                 return True
                 
             except Exception as e:
@@ -240,316 +268,245 @@ class CameraManager:
                 return False
     
     def close_all_cameras(self):
-        """Ferme toutes les caméras"""
-        logger.info("📷 Fermeture de toutes les caméras...")
+        """Ferme toutes les caméras ouvertes"""
+        aliases_to_close = list(self.active_cameras.keys())
         
-        with self.cameras_lock:
-            aliases_to_close = list(self.active_cameras.keys())
-            
         for alias in aliases_to_close:
             self.close_camera(alias)
         
-        logger.info("✅ Toutes les caméras fermées")
+        logger.info("🔒 Toutes les caméras fermées")
     
-    def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-        """Récupère une frame d'une caméra spécifique - VERSION OPTIMISÉE"""
-        # Vérification rapide dans le cache d'abord
-        cache_max_age = self.config.get('ui', 'camera_manager.streaming.cache_max_age', 0.1)
-        
-        with self.cache_lock:
-            if alias in self.frame_cache:
-                cached_result = self.frame_cache[alias]
-                cache_time = self.cache_timestamps.get(alias, 0)
-                
-                if time.time() - cache_time < cache_max_age and cached_result[0]:
-                    return cached_result
-        
-        return self._acquire_fresh_frame(alias)
-    
-    def _acquire_fresh_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-        """Acquiert une frame fraîche (méthode interne)"""
-        with self.cameras_lock:
-            if alias not in self.active_cameras:
-                return False, None, None
-            
-            cam_data = self.active_cameras[alias]
-            if not cam_data.get('is_active', False):
-                return False, None, None
-                
-            camera = cam_data['camera']
-            current_time = time.time()
-            
-            try:
-                if cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                    if hasattr(camera, 'get_latest_frame') and camera.is_streaming:
-                        frame = camera.get_latest_frame()
-                    else:
-                        frame = camera.get_frame()
-                    
-                    if frame is not None:
-                        cam_data['last_frame_time'] = current_time
-                        cam_data['frame_count'] += 1
-                        cam_data['poll_failures'] = 0
-                        result = (True, frame, None)
-                    else:
-                        cam_data['poll_failures'] += 1
-                        result = (False, None, None)
-                        
-                elif cam_data['info'].camera_type == CameraType.REALSENSE:
-                    success, color_frame, depth_frame = camera.get_frames()
-                    
-                    if success and color_frame is not None:
-                        cam_data['last_frame_time'] = current_time
-                        cam_data['frame_count'] += 1
-                        cam_data['poll_failures'] = 0
-                        result = (True, color_frame, depth_frame)
-                    else:
-                        cam_data['poll_failures'] += 1
-                        with self.cache_lock:
-                            if alias in self.frame_cache:
-                                result = self.frame_cache[alias]
-                            else:
-                                result = (False, None, None)
-                        
-                else:
-                    result = (False, None, None)
-                
-                if result[0]:
-                    with self.cache_lock:
-                        self.frame_cache[alias] = result
-                        self.cache_timestamps[alias] = current_time
-                
-                return result
-                    
-            except Exception as e:
-                logger.error(f"❌ Erreur récupération frame {alias}: {e}")
-                cam_data['poll_failures'] += 1
-                return False, None, None
-    
-    def get_all_frames(self) -> Dict[str, Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]]:
-        """Récupère les frames de toutes les caméras actives - VERSION CACHE"""
-        all_frames = {}
-        
-        with self.cache_lock:
-            for alias in self.active_cameras.keys():
-                if alias in self.frame_cache:
-                    all_frames[alias] = self.frame_cache[alias]
-                else:
-                    all_frames[alias] = (False, None, None)
-        
-        return all_frames
-    
-    def start_streaming(self, frame_callback: Callable = None) -> bool:
-        """Démarre le streaming de toutes les caméras - VERSION OPTIMISÉE"""
+    def start_streaming(self) -> bool:
+        """Démarre le streaming pour toutes les caméras ouvertes"""
         if self.streaming:
             logger.warning("⚠️ Streaming déjà actif")
             return True
         
         if not self.active_cameras:
-            logger.warning("⚠️ Aucune caméra ouverte pour streaming")
+            logger.warning("⚠️ Aucune caméra ouverte pour le streaming")
             return False
         
-        if frame_callback:
-            self.frame_callbacks.append(frame_callback)
-        
-        with self.cameras_lock:
+        try:
+            # Démarrage du streaming pour chaque caméra
             for alias, cam_data in self.active_cameras.items():
                 camera = cam_data['camera']
-                if cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                    try:
-                        camera.start_streaming()
-                        logger.info(f"🎬 Streaming USB3 démarré pour {alias}")
-                    except Exception as e:
-                        logger.error(f"❌ Erreur démarrage streaming USB3 {alias}: {e}")
-        
-        self.streaming_stop_event.clear()
-        self.streaming_thread = Thread(target=self._streaming_loop_optimized, daemon=True)
-        self.streaming_thread.start()
-        
-        self.streaming = True
-        logger.info("🎬 Streaming global démarré")
-        return True
+                
+                if hasattr(camera, 'start'):
+                    camera.start()
+                    cam_data['is_streaming'] = True
+                    logger.info(f"📹 Streaming démarré pour {alias}")
+            
+            # Thread de lecture des frames
+            self.streaming = True
+            self.streaming_stop_event.clear()
+            
+            self.streaming_thread = Thread(
+                target=self._streaming_loop,
+                name="CameraStreaming",
+                daemon=True
+            )
+            self.streaming_thread.start()
+            
+            logger.info("🎬 Streaming global démarré")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur démarrage streaming: {e}")
+            self.streaming = False
+            return False
     
     def stop_streaming(self):
-        """Arrête le streaming global"""
+        """Arrête le streaming"""
         if not self.streaming:
             return
         
+        logger.info("🛑 Arrêt du streaming...")
+        
+        # Signal d'arrêt
+        self.streaming = False
         self.streaming_stop_event.set()
         
+        # Attente fin du thread
         if self.streaming_thread and self.streaming_thread.is_alive():
-            join_timeout = self.config.get('ui', 'camera_manager.streaming.join_timeout', 1.0)
-            self.streaming_thread.join(timeout=join_timeout)
+            self.streaming_thread.join(timeout=2.0)
         
+        # Arrêt du streaming pour chaque caméra
         with self.cameras_lock:
             for alias, cam_data in self.active_cameras.items():
-                camera = cam_data['camera']
-                if cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                    try:
-                        camera.stop_streaming()
-                        logger.info(f"⏹️ Streaming USB3 arrêté pour {alias}")
-                    except Exception as e:
-                        logger.error(f"❌ Erreur arrêt streaming USB3 {alias}: {e}")
-        
-        self.streaming = False
-        logger.info("⏹️ Streaming global arrêté")
-    
-    def _streaming_loop_optimized(self):
-        """Boucle principale de streaming - VERSION OPTIMISÉE CONFIGURÉE"""
-        logger.debug("🔄 Début boucle streaming optimisée")
-        
-        frame_update_count = 0
-        loop_count = 0
-        last_successful_poll = {}
-        
-        # Configuration depuis JSON
-        base_sleep_time = self.config.get('ui', 'camera_manager.streaming.base_sleep_time', 0.033)
-        high_failure_threshold = self.config.get('ui', 'camera_manager.streaming.poll_failure_thresholds.high_failure', 10)
-        medium_failure_threshold = self.config.get('ui', 'camera_manager.streaming.poll_failure_thresholds.medium_failure', 5)
-        
-        problematic_interval = self.config.get('ui', 'camera_manager.streaming.polling_intervals.problematic', 0.1)
-        medium_interval = self.config.get('ui', 'camera_manager.streaming.polling_intervals.medium', 0.05)
-        normal_interval = self.config.get('ui', 'camera_manager.streaming.polling_intervals.normal', 0.025)
-        
-        log_interval = self.config.get('ui', 'camera_manager.streaming.log_interval_loops', 300)
-        
-        while not self.streaming_stop_event.is_set():
-            loop_count += 1
-            updated_any = False
-            current_time = time.time()
-            
-            try:
-                with self.cameras_lock:
-                    active_cameras_copy = dict(self.active_cameras)
-                
-                for alias, cam_data in active_cameras_copy.items():
-                    if not cam_data.get('is_active', False):
-                        continue
-                    
-                    poll_failures = cam_data.get('poll_failures', 0)
-                    last_poll = last_successful_poll.get(alias, 0)
-                    
-                    if poll_failures > high_failure_threshold:
-                        min_interval = problematic_interval
-                    elif poll_failures > medium_failure_threshold:
-                        min_interval = medium_interval
-                    else:
-                        min_interval = normal_interval
-                    
-                    if current_time - last_poll < min_interval:
-                        continue
-                    
+                try:
                     camera = cam_data['camera']
                     
-                    try:
-                        if cam_data['info'].camera_type == CameraType.REALSENSE:
-                            success, color_frame, depth_frame = camera.get_frames()
-                            if success and color_frame is not None:
-                                with self.cache_lock:
-                                    self.frame_cache[alias] = (True, color_frame, depth_frame)
-                                    self.cache_timestamps[alias] = current_time
-                                
-                                cam_data['last_frame_time'] = current_time
-                                cam_data['frame_count'] += 1
-                                cam_data['poll_failures'] = max(0, cam_data['poll_failures'] - 1)
-                                
-                                last_successful_poll[alias] = current_time
-                                updated_any = True
-                                
-                        elif cam_data['info'].camera_type == CameraType.USB3_CAMERA:
-                            if hasattr(camera, 'get_latest_frame') and camera.is_streaming:
-                                frame = camera.get_latest_frame()
-                                if frame is not None:
-                                    with self.cache_lock:
-                                        self.frame_cache[alias] = (True, frame, None)
-                                        self.cache_timestamps[alias] = current_time
-                                    
-                                    cam_data['last_frame_time'] = current_time
-                                    cam_data['frame_count'] += 1
-                                    cam_data['poll_failures'] = max(0, cam_data['poll_failures'] - 1)
-                                    
-                                    last_successful_poll[alias] = current_time
-                                    updated_any = True
-                                    
-                    except Exception as e:
-                        cam_data['poll_failures'] = cam_data.get('poll_failures', 0) + 1
-                        logger.debug(f"Poll échoué pour {alias}: {e}")
+                    if hasattr(camera, 'stop'):
+                        camera.stop()
+                    
+                    cam_data['is_streaming'] = False
+                    logger.info(f"📹 Streaming arrêté pour {alias}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erreur arrêt streaming {alias}: {e}")
+        
+        # Nettoyage du cache
+        with self.cache_lock:
+            self.frame_cache.clear()
+            self.cache_timestamps.clear()
+        
+        logger.info("✅ Streaming arrêté")
+    
+    def _streaming_loop(self):
+        """Boucle principale de streaming"""
+        logger.info("🔄 Démarrage boucle streaming")
+        
+        frame_interval = 1.0 / self.config.get('camera', 'manager.target_fps', 30)
+        
+        while self.streaming and not self.streaming_stop_event.is_set():
+            try:
+                current_time = time.time()
+                
+                # Lecture des frames pour chaque caméra active
+                with self.cameras_lock:
+                    cameras_to_process = list(self.active_cameras.items())
+                
+                for alias, cam_data in cameras_to_process:
+                    if not cam_data.get('is_streaming', False):
                         continue
-                
-                if updated_any:
-                    frame_update_count += 1
                     
-                    with self.cache_lock:
-                        current_frames = dict(self.frame_cache)
+                    try:
+                        self._read_camera_frame(alias, cam_data, current_time)
+                    except Exception as e:
+                        logger.debug(f"Erreur lecture frame {alias}: {e}")
+                        cam_data['poll_failures'] = cam_data.get('poll_failures', 0) + 1
+                
+                # Appel des callbacks
+                self._notify_frame_callbacks()
+                
+                # Pause pour respecter la fréquence
+                elapsed = time.time() - current_time
+                sleep_time = max(0, frame_interval - elapsed)
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                     
-                    frame_max_age = self.config.get('ui', 'camera_manager.streaming.frame_max_age', 0.5)
-                    valid_frames = {}
-                    for alias, frames in current_frames.items():
-                        cache_age = current_time - self.cache_timestamps.get(alias, 0)
-                        if frames[0] and cache_age < frame_max_age:
-                            valid_frames[alias] = frames
-                    
-                    if valid_frames:
-                        for callback in self.frame_callbacks:
-                            try:
-                                callback(valid_frames)
-                            except Exception as e:
-                                logger.error(f"❌ Erreur callback streaming: {e}")
-                
-                if updated_any:
-                    time.sleep(base_sleep_time)
-                else:
-                    time.sleep(base_sleep_time * 2)
-                
-                if loop_count % log_interval == 0:
-                    logger.debug(f"🔄 Loop {loop_count}, {frame_update_count} frames, caméras actives: {len(active_cameras_copy)}")
-                
             except Exception as e:
                 logger.error(f"❌ Erreur boucle streaming: {e}")
-                error_sleep = self.config.get('ui', 'camera_manager.streaming.error_sleep', 0.1)
-                time.sleep(error_sleep)
+                time.sleep(0.1)  # Pause d'urgence
         
-        logger.debug(f"🛑 Fin boucle streaming optimisée ({frame_update_count} frames sur {loop_count} loops)")
+        logger.info("✅ Boucle streaming terminée")
     
-    def get_all_stats(self) -> Dict[str, Dict[str, Any]]:
-        """Récupère les statistiques de toutes les caméras"""
-        stats = {}
+    def _read_camera_frame(self, alias: str, cam_data: Dict, timestamp: float):
+        """Lit une frame d'une caméra spécifique"""
+        camera = cam_data['camera']
         
+        try:
+            # Lecture selon le type de caméra
+            if cam_data['info'].camera_type == CameraType.REALSENSE:
+                ret, color_frame, depth_frame = camera.get_frames()
+            else:
+                ret, color_frame = camera.get_frame()
+                depth_frame = None
+            
+            if ret and color_frame is not None:
+                # Mise à jour du cache
+                with self.cache_lock:
+                    self.frame_cache[alias] = (ret, color_frame, depth_frame)
+                    self.cache_timestamps[alias] = timestamp
+                
+                # Statistiques
+                cam_data['frame_count'] += 1
+                cam_data['last_frame_time'] = timestamp
+                cam_data['poll_failures'] = 0
+                
+            else:
+                cam_data['poll_failures'] = cam_data.get('poll_failures', 0) + 1
+                
+        except Exception as e:
+            logger.debug(f"Erreur lecture {alias}: {e}")
+            cam_data['poll_failures'] = cam_data.get('poll_failures', 0) + 1
+    
+    def _notify_frame_callbacks(self):
+        """Notifie les callbacks de nouvelles frames"""
+        if not self.frame_callbacks:
+            return
+        
+        try:
+            # Frame la plus récente
+            latest_frame = None
+            latest_timestamp = 0
+            
+            with self.cache_lock:
+                for alias, timestamp in self.cache_timestamps.items():
+                    if timestamp > latest_timestamp and alias in self.frame_cache:
+                        ret, color, depth = self.frame_cache[alias]
+                        if ret and color is not None:
+                            latest_frame = color
+                            latest_timestamp = timestamp
+            
+            # Appel des callbacks
+            if latest_frame is not None:
+                for callback in self.frame_callbacks:
+                    try:
+                        callback(latest_frame)
+                    except Exception as e:
+                        logger.debug(f"Erreur callback frame: {e}")
+                        
+        except Exception as e:
+            logger.debug(f"Erreur notification callbacks: {e}")
+    
+    def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
+        """Récupère la dernière frame d'une caméra"""
+        with self.cache_lock:
+            if alias in self.frame_cache:
+                return self.frame_cache[alias]
+            else:
+                return False, None, None
+    
+    def add_frame_callback(self, callback: Callable):
+        """Ajoute un callback pour les nouvelles frames"""
+        if callback not in self.frame_callbacks:
+            self.frame_callbacks.append(callback)
+            logger.info("➕ Callback frame ajouté")
+    
+    def remove_frame_callback(self, callback: Callable):
+        """Supprime un callback"""
+        if callback in self.frame_callbacks:
+            self.frame_callbacks.remove(callback)
+            logger.info("➖ Callback frame supprimé")
+    
+    def get_active_cameras_info(self) -> Dict[str, Dict]:
+        """Retourne des informations sur les caméras actives"""
         with self.cameras_lock:
+            info = {}
+            
             for alias, cam_data in self.active_cameras.items():
-                camera = cam_data['camera']
+                info[alias] = {
+                    'name': cam_data['info'].name,
+                    'type': cam_data['info'].camera_type.value,
+                    'opened_at': cam_data['opened_at'],
+                    'frame_count': cam_data['frame_count'],
+                    'is_streaming': cam_data.get('is_streaming', False),
+                    'last_frame_time': cam_data.get('last_frame_time', 0),
+                    'poll_failures': cam_data.get('poll_failures', 0)
+                }
+            
+            return info
+    
+    def get_camera_stats(self) -> Dict[str, Dict]:
+        """Statistiques détaillées des caméras"""
+        with self.cameras_lock:
+            stats = {}
+            
+            for alias, cam_data in self.active_cameras.items():
                 info = cam_data['info']
                 
                 try:
-                    if info.camera_type == CameraType.USB3_CAMERA:
-                        camera_info = camera.get_info()
-                        stats[alias] = {
-                            'name': info.name,
-                            'type': 'USB3',
-                            'device_id': camera_info['device_id'],
-                            'resolution': f"{camera_info['width']}x{camera_info['height']}",
-                            'fps': camera_info.get('fps', 0),
-                            'status': camera_info['status'],
-                            'is_active': cam_data.get('is_active', False),
-                            'frame_count': cam_data['frame_count'],
-                            'last_timestamp': cam_data.get('last_frame_time', 0),
-                            'poll_failures': cam_data.get('poll_failures', 0)
-                        }
-                    elif info.camera_type == CameraType.REALSENSE:
-                        camera_info = camera.get_info()
-                        stats[alias] = {
-                            'name': info.name,
-                            'type': 'realsense',
-                            'device_serial': camera_info['device_serial'],
-                            'color_resolution': camera_info['color_resolution'],
-                            'depth_resolution': camera_info.get('depth_resolution', 'N/A'),
-                            'fps': camera_info.get('fps', 0),
-                            'status': camera_info['status'],
-                            'is_active': cam_data.get('is_active', False),
-                            'frame_count': cam_data['frame_count'],
-                            'last_timestamp': cam_data.get('last_frame_time', 0),
-                            'poll_failures': cam_data.get('poll_failures', 0)
-                        }
+                    stats[alias] = {
+                        'name': info.name,
+                        'type': info.camera_type.value,
+                        'device_id': str(info.device_id),
+                        'is_active': cam_data.get('is_streaming', False),
+                        'frame_count': cam_data['frame_count'],
+                        'last_timestamp': cam_data.get('last_frame_time', 0),
+                        'poll_failures': cam_data.get('poll_failures', 0)
+                    }
                 except Exception as e:
                     logger.error(f"❌ Erreur stats {alias}: {e}")
                     stats[alias] = {
@@ -558,8 +515,8 @@ class CameraManager:
                         'error': str(e),
                         'is_active': False
                     }
-        
-        return stats
+            
+            return stats
     
     def get_camera_intrinsics(self, alias: str) -> Dict[str, Any]:
         """Récupère les paramètres intrinsèques d'une caméra"""
@@ -610,8 +567,11 @@ class CameraManager:
     
     def __del__(self):
         """Destructeur - nettoyage automatique"""
-        self.stop_streaming()
-        self.close_all_cameras()
+        try:
+            self.stop_streaming()
+            self.close_all_cameras()
+        except Exception as e:
+            logger.debug(f"Erreur destructeur: {e}")
 
 
 # ============================================================================

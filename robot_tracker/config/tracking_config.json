@@ -1,16 +1,18 @@
 {
   "_file_info": {
     "file_path": "config/tracking_config.json",
-    "version": "1.1", 
-    "modification": "Extension du tracking_config.json existant pour l'onglet Cible"
+    "version": "1.2", 
+    "modification": "Configuration complète pour l'onglet Cible avec gestion des erreurs NoneType"
   },
   
   "target_detection": {
     "aruco": {
+      "enabled": true,
       "auto_detect_folder": true,
       "default_markers_folder": "./ArUco",
       "config_file_name": "markers_config.json",
       "supported_extensions": [".png", ".jpg", ".jpeg"],
+      "dictionary_type": "4X4_50",
       "detection_params": {
         "adaptiveThreshWinSizeMin": 3,
         "adaptiveThreshWinSizeMax": 23,
@@ -79,46 +81,70 @@
       "default_type": "rectangle",
       "line_thickness": 2,
       "selection_handles_size": 8,
-      "snap_distance": 10,
-      "max_roi_count": 10
+      "max_roi_count": 10,
+      "colors": {
+        "active": [255, 255, 0],
+        "inactive": [128, 128, 128],
+        "selected": [0, 255, 255]
+      }
     },
     "display": {
       "colors": {
         "aruco_detection": [0, 255, 0],
-        "aruco_id_text": [255, 255, 255],
         "reflective_detection": [255, 0, 0],
         "led_detection": [0, 0, 255],
+        "trajectory": [0, 255, 255],
         "roi_active": [255, 255, 0],
-        "roi_inactive": [128, 128, 128],
-        "trajectory_line": [255, 165, 0],
-        "prediction_line": [0, 255, 255]
-      },
-      "fonts": {
-        "marker_id": {"size": 12, "bold": true, "thickness": 2},
-        "statistics": {"size": 10, "bold": false, "thickness": 1},
-        "status": {"size": 9, "bold": false, "thickness": 1}
+        "roi_inactive": [128, 128, 128]
       },
       "overlays": {
-        "show_marker_ids": true,
-        "show_confidence": true,
-        "show_fps": true,
-        "show_detection_count": true,
-        "show_roi_info": true
+        "show_detection_boxes": true,
+        "show_confidence_scores": true,
+        "show_trajectory_history": true,
+        "trajectory_max_points": 50,
+        "show_roi_boundaries": true,
+        "show_statistics_overlay": false
       }
     },
     "export": {
-      "formats": ["csv", "json", "xml"],
+      "formats": ["csv", "json", "xlsx"],
       "default_format": "csv",
       "include_timestamps": true,
       "include_confidence": true,
-      "include_roi_data": true,
-      "auto_save_interval": 300
-    },
-    "performance": {
-      "max_fps": 30,
-      "skip_frames_on_lag": true,
-      "max_detection_time_ms": 50,
-      "memory_cleanup_interval": 100
+      "include_roi_info": true
     }
+  },
+  
+  "kalman_filter": {
+    "enabled": true,
+    "process_noise": 0.01,
+    "measurement_noise": 0.1,
+    "error_covariance": 1.0,
+    "state_transition": {
+      "position": 1.0,
+      "velocity": 0.1
+    }
+  },
+  
+  "prediction": {
+    "enabled": true,
+    "horizon_frames": 5,
+    "confidence_threshold": 0.7,
+    "velocity_smoothing": 0.8
+  },
+  
+  "tracking": {
+    "max_tracking_distance": 50.0,
+    "min_detection_confidence": 0.5,
+    "track_timeout_frames": 10,
+    "new_track_threshold": 3,
+    "track_history_length": 100
+  },
+  
+  "performance": {
+    "max_detections_per_frame": 20,
+    "detection_skip_frames": 0,
+    "roi_processing_threads": 2,
+    "cache_detection_results": true
   }
 }
