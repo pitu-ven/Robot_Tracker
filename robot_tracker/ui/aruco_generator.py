@@ -1,12 +1,13 @@
 # robot_tracker/ui/aruco_generator.py
-# Version 1.1 - Générateur ArUco optimisé complet
-# Modification: Intégration avec configuration JSON dédiée
+# Version 1.2 - Générateur ArUco perfectionné
+# Modification: Options par défaut, dossier personnalisé, impression désactivée
 
 import sys
 import cv2
 import numpy as np
 import logging
 from pathlib import Path
+from datetime import datetime
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, 
                            QGroupBox, QLabel, QComboBox, QSpinBox, QCheckBox,
                            QPushButton, QScrollArea, QWidget, QMessageBox,
@@ -94,7 +95,7 @@ class ArUcoGeneratorThread(QThread):
             self.error_occurred.emit(f"Erreur génération: {str(e)}")
 
 class ArUcoGeneratorDialog(QDialog):
-    """Dialog de génération de codes ArUco optimisé"""
+    """Dialog de génération de codes ArUco perfectionné"""
     
     def __init__(self, config_manager, parent=None):
         super().__init__(parent)
@@ -102,10 +103,14 @@ class ArUcoGeneratorDialog(QDialog):
         self.generated_markers = {}
         self.generation_thread = None
         
+        # Informations pour le dossier de sauvegarde
+        self.current_dictionary = ""
+        self.current_size = 0
+        
         self.init_ui()
         self.connect_signals()
         
-        logger.info("🎯 Générateur ArUco initialisé")
+        logger.info("🎯 Générateur ArUco perfectionné initialisé")
     
     def init_ui(self):
         """Initialise l'interface utilisateur"""
@@ -156,6 +161,10 @@ class ArUcoGeneratorDialog(QDialog):
         default_dict = aruco_config.get('default_dictionary', 'DICT_5X5_100')
         if default_dict in dictionaries:
             self.dictionary_combo.setCurrentText(default_dict)
+            self.current_dictionary = default_dict
+        
+        # Connexion pour mise à jour du dossier
+        self.dictionary_combo.currentTextChanged.connect(self.update_dictionary)
         
         # Taille marqueur
         size_config = aruco_config.get('marker_size', {})
@@ -165,8 +174,13 @@ class ArUcoGeneratorDialog(QDialog):
             size_config.get('min', 50),
             size_config.get('max', 1000)
         )
-        self.size_spinbox.setValue(size_config.get('default', 200))
+        default_size = size_config.get('default', 200)
+        self.size_spinbox.setValue(default_size)
         self.size_spinbox.setSuffix(" px")
+        self.current_size = default_size
+        
+        # Connexion pour mise à jour du dossier
+        self.size_spinbox.valueChanged.connect(self.update_size)
         
         # Plage d'IDs
         id_config = aruco_config.get('id_range', {})
@@ -180,11 +194,16 @@ class ArUcoGeneratorDialog(QDialog):
         self.id_end_spinbox.setRange(0, 9999)
         self.id_end_spinbox.setValue(id_config.get('default_end', 9))
         
-        # Options d'impression
+        # Options d'impression - MODIFICATION: Activées par défaut
         print_label = QLabel(labels_config.get('print_options', "Options:"))
         self.add_border_checkbox = QCheckBox(labels_config.get('add_border', "Bordure"))
+        self.add_border_checkbox.setChecked(True)  # ✅ Activé par défaut
+        
         self.add_id_text_checkbox = QCheckBox(labels_config.get('add_id_text', "ID texte"))
+        self.add_id_text_checkbox.setChecked(True)  # ✅ Activé par défaut
+        
         self.high_quality_checkbox = QCheckBox(labels_config.get('high_quality', "Haute qualité"))
+        self.high_quality_checkbox.setChecked(True)  # ✅ Activé par défaut
         
         # Assemblage layout
         layout.addWidget(dict_label, 0, 0)
@@ -269,7 +288,10 @@ class ArUcoGeneratorDialog(QDialog):
         self.close_button = QPushButton(labels_config.get('close_button', "❌ Fermer"))
         
         self.save_button.setEnabled(False)
+        # MODIFICATION: Bouton imprimer désactivé
         self.print_button.setEnabled(False)
+        self.print_button.setToolTip("Impression temporairement désactivée")
+        self.print_button.setStyleSheet("color: gray;")
         
         layout.addWidget(self.save_button)
         layout.addWidget(self.print_button)
@@ -283,8 +305,44 @@ class ArUcoGeneratorDialog(QDialog):
         self.generate_button.clicked.connect(self.start_generation)
         self.stop_button.clicked.connect(self.stop_generation)
         self.save_button.clicked.connect(self.save_markers)
-        self.print_button.clicked.connect(self.print_markers)
+        # self.print_button.clicked.connect(self.print_markers)  # Désactivé
         self.close_button.clicked.connect(self.close)
+    
+    def update_dictionary(self, dictionary_name):
+        """Met à jour le dictionnaire courant"""
+        self.current_dictionary = dictionary_name
+        logger.debug(f"Dictionnaire mis à jour: {dictionary_name}")
+    
+    def update_size(self, size):
+        """Met à jour la taille courante"""
+        self.current_size = size
+        logger.debug(f"Taille mise à jour: {size}")
+    
+    def generate_folder_name(self):
+        """Génère le nom du dossier selon la convention type_taille_date"""
+        # Format: DICT_5X5_100_200px_20250128_1435
+        current_date = datetime.now()
+        date_str = current_date.strftime("%Y%m%d_%H%M")
+        
+        # Nettoyer le nom du dictionnaire (enlever "DICT_" si présent)
+        dict_clean = self.current_dictionary.replace("DICT_", "")
+        
+        folder_name = f"{dict_clean}_{self.current_size}px_{date_str}"
+        
+        logger.info(f"📁 Nom de dossier généré: {folder_name}")
+        return folder_name
+    
+    def get_default_save_path(self):
+        """Retourne le chemin de sauvegarde par défaut personnalisé"""
+        # MODIFICATION: Chemin personnalisé
+        base_path = Path("C:/0_COMPOSITADOUR/6_JERICO/Robot_Tracker/ArUco")
+        folder_name = self.generate_folder_name()
+        full_path = base_path / folder_name
+        
+        # Créer le dossier s'il n'existe pas
+        full_path.mkdir(parents=True, exist_ok=True)
+        
+        return str(full_path)
     
     def start_generation(self):
         """Démarre la génération"""
@@ -301,6 +359,10 @@ class ArUcoGeneratorDialog(QDialog):
         if id_start > id_end:
             QMessageBox.warning(self, "Erreur", "ID de début doit être ≤ ID de fin")
             return
+        
+        # Mise à jour des paramètres actuels
+        self.current_dictionary = dictionary_name
+        self.current_size = marker_size
         
         # Nettoyage affichage précédent
         self.clear_markers_display()
@@ -320,11 +382,14 @@ class ArUcoGeneratorDialog(QDialog):
         self.generation_thread.error_occurred.connect(self.handle_error)
         
         self.generation_thread.start()
+        
+        logger.info(f"🎯 Génération démarrée: {dictionary_name}, {marker_size}px, IDs {id_start}-{id_end}")
     
     def stop_generation(self):
         """Arrête la génération"""
         if self.generation_thread:
             self.generation_thread.stop()
+            logger.info("⏹️ Génération arrêtée par l'utilisateur")
     
     def update_progress(self, current: int, total: int):
         """Met à jour la barre de progression"""
@@ -355,13 +420,15 @@ class ArUcoGeneratorDialog(QDialog):
         self.progress_bar.setVisible(False)
         
         self.save_button.setEnabled(len(self.generated_markers) > 0)
-        self.print_button.setEnabled(len(self.generated_markers) > 0)
+        # Impression reste désactivée
         
         aruco_config = self.config.get_aruco_config()
         messages_config = aruco_config.get('messages', {})
         
         QMessageBox.information(self, "Succès", 
                                messages_config.get('completed', "✅ Génération terminée"))
+        
+        logger.info(f"✅ Génération terminée: {len(self.generated_markers)} marqueurs créés")
     
     def handle_error(self, error_message: str):
         """Gestion des erreurs"""
@@ -374,6 +441,8 @@ class ArUcoGeneratorDialog(QDialog):
         
         QMessageBox.critical(self, "Erreur", 
                             f"{messages_config.get('error', 'Erreur')}: {error_message}")
+        
+        logger.error(f"❌ Erreur génération: {error_message}")
     
     def clear_markers_display(self):
         """Nettoie l'affichage des marqueurs"""
@@ -383,27 +452,33 @@ class ArUcoGeneratorDialog(QDialog):
                 child.widget().deleteLater()
     
     def save_markers(self):
-        """Sauvegarde les marqueurs générés"""
+        """Sauvegarde les marqueurs générés avec dossier personnalisé"""
         if not self.generated_markers:
             return
         
-        aruco_config = self.config.get_aruco_config()
-        export_config = aruco_config.get('export', {})
-        default_dir = export_config.get('default_save_dir', './aruco_markers')
+        # MODIFICATION: Utilisation du chemin personnalisé par défaut
+        default_path = self.get_default_save_path()
         
+        # Proposer à l'utilisateur de changer le dossier s'il le souhaite
         save_dir = QFileDialog.getExistingDirectory(
-            self, "Choisir le dossier de sauvegarde", default_dir
+            self, "Choisir le dossier de sauvegarde", default_path
         )
         
         if not save_dir:
-            return
+            # Si l'utilisateur annule, utiliser le chemin par défaut
+            save_dir = default_path
         
         save_path = Path(save_dir)
-        save_path.mkdir(exist_ok=True)
+        save_path.mkdir(parents=True, exist_ok=True)
         
         try:
+            aruco_config = self.config.get_aruco_config()
+            export_config = aruco_config.get('export', {})
+            
+            saved_files = []
+            
             for marker_id, marker_image in self.generated_markers.items():
-                # Application des options
+                # Application des options (toutes activées par défaut)
                 final_image = marker_image.copy()
                 
                 if self.add_border_checkbox.isChecked():
@@ -432,20 +507,45 @@ class ArUcoGeneratorDialog(QDialog):
                     final_image = cv2.resize(final_image, None, fx=scale, fy=scale, 
                                            interpolation=cv2.INTER_NEAREST)
                 
-                # Sauvegarde
-                filename = save_path / f"aruco_marker_{marker_id:04d}.png"
+                # Sauvegarde avec nom standardisé
+                filename = save_path / f"aruco_{self.current_dictionary}_{marker_id:04d}.png"
                 cv2.imwrite(str(filename), final_image)
+                saved_files.append(filename)
             
+            # Message de succès avec informations détaillées
             messages_config = aruco_config.get('messages', {})
-            QMessageBox.information(self, "Succès", 
-                                   f"{messages_config.get('save_success', 'Sauvegarde réussie')}\n"
-                                   f"Dossier: {save_path}")
+            success_msg = f"""✅ {len(saved_files)} marqueurs sauvegardés avec succès!
+
+📁 Dossier: {save_path.name}
+📍 Chemin: {save_path}
+🎯 Type: {self.current_dictionary}
+📏 Taille: {self.current_size}px
+🔢 IDs: {min(self.generated_markers.keys())}-{max(self.generated_markers.keys())}
+
+Options appliquées:
+• Bordure: {'✅' if self.add_border_checkbox.isChecked() else '❌'}
+• ID en texte: {'✅' if self.add_id_text_checkbox.isChecked() else '❌'}  
+• Haute qualité: {'✅' if self.high_quality_checkbox.isChecked() else '❌'}"""
+            
+            QMessageBox.information(self, "Sauvegarde réussie", success_msg)
+            
+            logger.info(f"💾 {len(saved_files)} marqueurs sauvegardés dans: {save_path}")
             
         except Exception as e:
             QMessageBox.critical(self, "Erreur", f"Erreur sauvegarde: {e}")
+            logger.error(f"❌ Erreur sauvegarde: {e}")
     
     def print_markers(self):
-        """Imprime les marqueurs"""
+        """Impression des marqueurs - DÉSACTIVÉE TEMPORAIREMENT"""
+        QMessageBox.information(
+            self, "Impression désactivée", 
+            "La fonctionnalité d'impression est temporairement désactivée.\n"
+            "Utilisez la sauvegarde pour obtenir les fichiers images."
+        )
+        return
+        
+        # Code d'impression commenté pour plus tard
+        """
         if not self.generated_markers:
             return
         
@@ -457,12 +557,10 @@ class ArUcoGeneratorDialog(QDialog):
                 aruco_config = self.config.get_aruco_config()
                 print_config = aruco_config.get('printing', {})
                 
-                # Configuration impression depuis JSON
                 markers_per_row = print_config.get('markers_per_row', 4)
                 markers_per_col = print_config.get('markers_per_col', 6)
                 margin = print_config.get('margin', 50)
                 
-                # Création de l'image d'impression
                 self._create_print_layout(printer, markers_per_row, markers_per_col, margin)
                 
                 messages_config = aruco_config.get('messages', {})
@@ -471,46 +569,8 @@ class ArUcoGeneratorDialog(QDialog):
                 
             except Exception as e:
                 QMessageBox.critical(self, "Erreur", f"Erreur impression: {e}")
-    
-    def _create_print_layout(self, printer, markers_per_row: int, markers_per_col: int, margin: int):
-        """Crée la mise en page d'impression"""
-        from PyQt6.QtGui import QPainter
-        
-        painter = QPainter(printer)
-        page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
-        
-        available_width = page_rect.width() - 2 * margin
-        available_height = page_rect.height() - 2 * margin
-        
-        marker_width = available_width // markers_per_row
-        marker_height = available_height // markers_per_col
-        marker_size = min(marker_width, marker_height) - 10  # Espacement
-        
-        markers_list = list(self.generated_markers.items())
-        
-        for i, (marker_id, marker_image) in enumerate(markers_list):
-            if i >= markers_per_row * markers_per_col:
-                break
-            
-            row = i // markers_per_row
-            col = i % markers_per_row
-            
-            x = margin + col * marker_width + (marker_width - marker_size) // 2
-            y = margin + row * marker_height + (marker_height - marker_size) // 2
-            
-            # Conversion en QPixmap pour l'impression
-            height, width = marker_image.shape
-            q_image = QImage(marker_image.data, width, height, width, QImage.Format.Format_Grayscale8)
-            pixmap = QPixmap.fromImage(q_image).scaled(
-                marker_size, marker_size, Qt.AspectRatioMode.KeepAspectRatio
-            )
-            
-            painter.drawPixmap(x, y, pixmap)
-            
-            # Ajout de l'ID sous le marqueur
-            painter.drawText(x, y + marker_size + 15, f"ID: {marker_id}")
-        
-        painter.end()
+        """
+
 
 # Fonction d'aide pour les tests
 def create_test_dialog():
@@ -523,18 +583,24 @@ def create_test_dialog():
     class TestConfig:
         def __init__(self):
             self.aruco_config = {
-                "window": {"title": "Test ArUco", "width": 800, "height": 600},
-                "dictionaries": ["DICT_4X4_50", "DICT_5X5_100"],
-                "default_dictionary": "DICT_4X4_50",
-                "marker_size": {"min": 50, "max": 500, "default": 100},
+                "window": {"title": "Test ArUco Perfectionné", "width": 900, "height": 700},
+                "dictionaries": ["DICT_4X4_50", "DICT_5X5_100", "DICT_6X6_250"],
+                "default_dictionary": "DICT_5X5_100",
+                "marker_size": {"min": 50, "max": 500, "default": 200},
                 "id_range": {"default_start": 0, "default_end": 9},
-                "display": {"marker_display_size": 100, "markers_per_row": 4},
+                "display": {"marker_display_size": 120, "markers_per_row": 6},
                 "labels": {
-                    "config_group": "Configuration",
-                    "generate_button": "Générer",
-                    "stop_button": "Arrêter"
+                    "config_group": "📋 Configuration",
+                    "generate_button": "🎯 Générer Marqueurs",
+                    "stop_button": "⏹️ Arrêter"
                 },
-                "messages": {"completed": "Terminé"}
+                "messages": {"completed": "✅ Génération terminée"},
+                "export": {
+                    "border_size": 20,
+                    "text_height": 40,
+                    "font_scale": 1.0,
+                    "high_quality_scale": 4
+                }
             }
         
         def get_aruco_config(self):

@@ -27,6 +27,14 @@ logs/*.log
 # Rapports générés
 reports/*.pdf
 
+# === ArUco Generated Files ===
+# Dossier principal des codes ArUco générés
+ArUco/
+# Alternative plus spécifique si vous voulez garder la structure mais ignorer les images
+ArUco/**/*.png
+ArUco/**/*.jpg
+ArUco/**/*.jpeg
+
 # Configuration locale (ne pas versionner)
 # config/*_config.json #On versionne pour l'instant car dev
 !config/default/

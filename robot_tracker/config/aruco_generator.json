@@ -38,14 +38,23 @@
       "thread_sleep_ms": 10
     },
     "export": {
-      "default_save_dir": "./aruco_markers",
+      "default_save_dir": "C:/0_COMPOSITADOUR/6_JERICO/Robot_Tracker/ArUco",
+      "folder_name_format": "{dictionary}_{size}px_{date}",
+      "date_format": "%Y%m%d_%H%M",
+      "filename_format": "aruco_{dictionary}_{id:04d}.png",
       "high_quality_scale": 4,
       "border_size": 20,
       "text_height": 40,
       "font_scale": 1.0,
       "image_format": "png"
     },
+    "default_options": {
+      "add_border": true,
+      "add_id_text": true,
+      "high_quality": true
+    },
     "printing": {
+      "enabled": false,
       "markers_per_row": 4,
       "markers_per_col": 6,
       "margin": 50,
@@ -56,7 +65,7 @@
       "dictionary": "Dictionnaire ArUco:",
       "marker_size": "Taille marqueur (pixels):",
       "id_range": "Plage d'IDs:",
-      "print_options": "Options impression:",
+      "print_options": "Options d'export:",
       "add_border": "Ajouter bordure",
       "add_id_text": "Ajouter ID en texte",
       "high_quality": "Haute qualité",
@@ -70,15 +79,18 @@
     },
     "messages": {
       "ready": "Prêt à générer",
-      "no_markers": "Aucun marqueur généré\\n\\nConfigurez les paramètres et cliquez sur 'Générer'",
+      "no_markers": "Aucun marqueur généré\n\nConfigurez les paramètres et cliquez sur 'Générer'",
       "generating": "Génération en cours...",
       "stopped": "Génération arrêtée",
       "completed": "✅ Marqueurs générés avec succès",
       "error": "❌ Erreur de génération",
       "print_success": "Impression terminée avec succès",
+      "print_disabled": "Impression temporairement désactivée",
       "save_success": "Sauvegarde terminée avec succès",
       "invalid_range": "Plage d'IDs invalide",
-      "too_many_markers": "Attention: nombre élevé de marqueurs à générer"
+      "too_many_markers": "Attention: nombre élevé de marqueurs à générer",
+      "folder_created": "📁 Dossier créé: {folder_name}",
+      "files_saved": "💾 {count} fichiers sauvegardés"
     },
     "tooltips": {
       "dictionary": "Sélectionnez le type de dictionnaire ArUco à utiliser",
@@ -86,7 +98,20 @@
       "id_range": "Plage d'identifiants des marqueurs à générer",
       "add_border": "Ajoute une bordure blanche autour du marqueur pour l'impression",
       "add_id_text": "Ajoute l'ID du marqueur en texte sous l'image",
-      "high_quality": "Génère des images haute résolution (plus lent)"
+      "high_quality": "Génère des images haute résolution (facteur x4)",
+      "print_button": "Fonctionnalité d'impression temporairement désactivée",
+      "save_path": "Les fichiers seront sauvegardés dans un dossier nommé selon le format: type_taille_date"
+    },
+    "help": {
+      "folder_naming": "Convention de nommage des dossiers: {dictionnaire}_{taille}px_{AAAAMMJJ_HHMM}",
+      "file_naming": "Convention de nommage des fichiers: aruco_{dictionnaire}_{ID}.png",
+      "recommended_settings": {
+        "dictionary": "DICT_5X5_100 (bon compromis précision/robustesse)",
+        "size": "200px (optimal pour impression A4)",
+        "border": "Recommandé pour l'impression",
+        "id_text": "Utile pour l'identification visuelle",
+        "high_quality": "Recommandé pour l'impression haute résolution"
+      }
     }
   }
 }
