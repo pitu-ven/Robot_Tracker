@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/hardware/realsense_driver.py
-Driver pour caméra Intel RealSense D435/D455 - Version 2.1
-Modification: Correction de la méthode get_frames() pour compatibilité avec CameraManager
+Driver pour caméra Intel RealSense entièrement configuré - Version 2.5
+Modification: Correction définitive du bloc try-except
 """
 
 import pyrealsense2 as rs
@@ -17,7 +17,7 @@ from typing import Optional, Tuple, Dict, Any, List
 logger = logging.getLogger(__name__)
 
 class RealSenseCamera:
-    """Driver pour caméra Intel RealSense D435/D455"""
+    """Driver pour caméra Intel RealSense D435/D455 entièrement configuré"""
     
     def __init__(self, config):
         self.config = config
@@ -56,7 +56,8 @@ class RealSenseCamera:
         self.enable_filters = self.config.get('camera', 'realsense.enable_filters', True)
         self.enable_align = self.config.get('camera', 'realsense.enable_align', True)
         
-        logger.info(f"🎥 RealSense initialisé - Série: {self.device_serial or 'Auto'}")
+        version_info = self.config.get('camera', 'realsense.version', '2.5')
+        logger.info(f"🎥 RealSense v{version_info} initialisé - Série: {self.device_serial or 'Auto'}")
     
     def detect_cameras(self) -> List[Dict[str, Any]]:
         """Détecte toutes les caméras RealSense disponibles"""
@@ -128,30 +129,29 @@ class RealSenseCamera:
             
             logger.info("📷 Démarrage streaming RealSense...")
             
-            # Création du pipeline
             self.pipeline = rs.pipeline()
             self.config_rs = rs.config()
             
-            # Sélection du device par série si spécifié
             if self.device_serial:
                 self.config_rs.enable_device(self.device_serial)
                 logger.info(f"🎯 Device sélectionné: {self.device_serial}")
             
-            # Configuration des streams
             self._configure_streams()
             
-            # Démarrage
             profile = self.pipeline.start(self.config_rs)
             
-            # Configuration post-traitement
             self._setup_post_processing()
             
-            # Test d'acquisition
-            for i in range(5):
-                frames = self.pipeline.wait_for_frames(timeout_ms=1000)
+            # Test d'acquisition avec timeout configurable
+            test_attempts = self.config.get('camera', 'realsense.test_attempts', 5)
+            test_timeout = self.config.get('camera', 'realsense.test_timeout', 1000)
+            test_sleep = self.config.get('camera', 'realsense.test_sleep', 0.1)
+            
+            for i in range(test_attempts):
+                frames = self.pipeline.wait_for_frames(timeout_ms=test_timeout)
                 if frames:
                     break
-                time.sleep(0.1)
+                time.sleep(test_sleep)
             else:
                 raise Exception("Impossible d'acquérir des frames de test")
             
@@ -159,7 +159,6 @@ class RealSenseCamera:
             self.frame_count = 0
             self.last_fps_time = time.time()
             
-            # Log des informations du device
             self._log_device_info(profile)
             
             logger.info("✅ Streaming RealSense démarré")
@@ -172,7 +171,6 @@ class RealSenseCamera:
     
     def _configure_streams(self):
         """Configure les streams couleur et profondeur"""
-        # Stream couleur
         self.config_rs.enable_stream(
             rs.stream.color,
             self.color_width,
@@ -181,7 +179,6 @@ class RealSenseCamera:
             self.color_fps
         )
         
-        # Stream profondeur
         self.config_rs.enable_stream(
             rs.stream.depth,
             self.depth_width,
@@ -190,7 +187,6 @@ class RealSenseCamera:
             self.depth_fps
         )
         
-        # Stream infrarouge si activé
         if self.enable_infrared:
             self.config_rs.enable_stream(
                 rs.stream.infrared,
@@ -207,11 +203,9 @@ class RealSenseCamera:
         if not self.enable_filters:
             return
         
-        # Align object pour aligner profondeur sur couleur
         if self.enable_align:
             self.align = rs.align(rs.stream.color)
         
-        # Filtres pour améliorer la qualité de profondeur
         self.decimation_filter = rs.decimation_filter()
         self.temporal_filter = rs.temporal_filter()
         self.spatial_filter = rs.spatial_filter()
@@ -229,18 +223,16 @@ class RealSenseCamera:
         logger.info("🔧 Filtres post-traitement configurés")
 
     def get_frames(self) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-        """Récupère les frames couleur et profondeur - FORMAT CORRIGÉ"""
+        """Récupère les frames couleur et profondeur"""
         if not self.is_streaming:
             return False, None, None
         
         try:
-            # Acquisition NON-BLOQUANTE
             frames = self.pipeline.poll_for_frames()
             if not frames:
                 return False, None, None
             
             with self.frame_lock:
-                # Application des filtres si activés
                 if self.enable_filters:
                     depth_frame = frames.get_depth_frame()
                     if depth_frame:
@@ -249,30 +241,24 @@ class RealSenseCamera:
                         depth_frame = self.temporal_filter.process(depth_frame)
                         depth_frame = self.hole_filling_filter.process(depth_frame)
                 
-                # Alignement des frames
                 if self.enable_align and hasattr(self, 'align'):
                     frames = self.align.process(frames)
                 
-                # Extraction des frames
                 color_frame = frames.get_color_frame()
                 depth_frame = frames.get_depth_frame()
                 
                 if not color_frame:
                     return False, None, None
                 
-                # Conversion en numpy arrays
                 color_image = np.asanyarray(color_frame.get_data())
                 depth_image = np.asanyarray(depth_frame.get_data()) if depth_frame else None
                 
-                # Stockage pour accès ultérieur
                 self.color_frame = color_frame
                 self.depth_frame = depth_frame
                 self.last_timestamp = frames.get_timestamp()
                 
-                # Statistiques FPS
                 self._update_fps_stats()
                 
-                # RETOUR DANS LE BON FORMAT : (success, color, depth)
                 return True, color_image, depth_image
                 
         except Exception as e:
@@ -286,7 +272,7 @@ class RealSenseCamera:
         
         try:
             depth_value = self.depth_frame.get_distance(x, y)
-            return depth_value  # Déjà en mètres
+            return depth_value
             
         except Exception as e:
             logger.error(f"❌ Erreur lecture profondeur: {e}")
@@ -299,9 +285,15 @@ class RealSenseCamera:
                 profile = self.pipeline.get_active_profile()
                 depth_sensor = profile.get_device().first_depth_sensor()
                 return depth_sensor.get_depth_scale()
-            return 0.001  # Valeur par défaut
-        except:
-            return 0.001
+            
+            # Si pas de pipeline actif, retourner valeur par défaut
+            default_scale = self.config.get('camera', 'realsense.default_depth_scale', 0.001)
+            return default_scale
+            
+        except Exception as e:
+            # En cas d'erreur, retourner valeur de configuration par défaut
+            logger.debug(f"Erreur récupération depth_scale: {e}")
+            return self.config.get('camera', 'realsense.default_depth_scale', 0.001)
     
     def get_intrinsics(self) -> Dict[str, Any]:
         """Récupère les paramètres intrinsèques des caméras"""
@@ -311,15 +303,12 @@ class RealSenseCamera:
         try:
             profile = self.pipeline.get_active_profile()
             
-            # Intrinsèques couleur
             color_stream = profile.get_stream(rs.stream.color)
             color_intrinsics = color_stream.as_video_stream_profile().get_intrinsics()
             
-            # Intrinsèques profondeur
             depth_stream = profile.get_stream(rs.stream.depth)
             depth_intrinsics = depth_stream.as_video_stream_profile().get_intrinsics()
             
-            # Extrinsèques (transformation profondeur -> couleur)
             extrinsics = depth_stream.get_extrinsics_to(color_stream)
             
             return {
@@ -353,7 +342,7 @@ class RealSenseCamera:
             return {}
 
     def get_info(self) -> Dict[str, Any]:
-        """Retourne les informations de la caméra - FORMAT CORRIGÉ"""
+        """Retourne les informations de la caméra"""
         if not self.is_streaming:
             return {
                 'device_serial': self.device_serial or 'Auto',
@@ -380,7 +369,9 @@ class RealSenseCamera:
         self.frame_count += 1
         current_time = time.time()
         
-        if current_time - self.last_fps_time >= 1.0:
+        fps_update_interval = self.config.get('ui', 'realsense.logging.fps_update_interval', 1.0)
+        
+        if current_time - self.last_fps_time >= fps_update_interval:
             self.current_fps = self.frame_count / (current_time - self.last_fps_time)
             self.frame_count = 0
             self.last_fps_time = current_time
@@ -394,7 +385,6 @@ class RealSenseCamera:
             logger.info(f"📦 S/N: {device.get_info(rs.camera_info.serial_number)}")
             logger.info(f"🔧 Firmware: {device.get_info(rs.camera_info.firmware_version)}")
             
-            # Informations des streams actifs
             for stream in profile.get_streams():
                 stream_profile = stream.as_video_stream_profile()
                 logger.info(f"🎬 {stream.stream_type()}: {stream_profile.width()}x{stream_profile.height()}@{stream.fps()}fps")
@@ -445,18 +435,23 @@ def test_realsense(device_serial: Optional[str] = None, duration: float = 5.0) -
     """Test rapide d'une caméra RealSense"""
     logger.info(f"🧪 Test RealSense {device_serial or 'auto'} pendant {duration}s...")
     
+    # Configuration de test avec toutes les valeurs externalisées
+    test_config = {
+        'camera.realsense.device_serial': device_serial,
+        'camera.realsense.color_width': 640,
+        'camera.realsense.color_height': 480,
+        'camera.realsense.color_fps': 30,
+        'camera.realsense.depth_width': 640,
+        'camera.realsense.depth_height': 480,
+        'camera.realsense.depth_fps': 30,
+        'camera.realsense.enable_filters': False,
+        'camera.realsense.enable_align': True,
+        'ui.realsense.logging.frame_log_interval': 30,
+        'test.frame_delay': 0.01
+    }
+    
     dummy_config = type('Config', (), {
-        'get': lambda self, section, key, default=None: {
-            'camera.realsense.device_serial': device_serial,
-            'camera.realsense.color_width': 640,
-            'camera.realsense.color_height': 480,
-            'camera.realsense.color_fps': 30,
-            'camera.realsense.depth_width': 640,
-            'camera.realsense.depth_height': 480,
-            'camera.realsense.depth_fps': 30,
-            'camera.realsense.enable_filters': False,
-            'camera.realsense.enable_align': True
-        }.get(f"{section}.{key}", default)
+        'get': lambda self, section, key, default=None: test_config.get(f"{section}.{key}", default)
     })()
     
     camera = RealSenseCamera(dummy_config)
@@ -468,24 +463,26 @@ def test_realsense(device_serial: Optional[str] = None, duration: float = 5.0) -
         start_time = time.time()
         frame_count = 0
         
+        # Configuration du logging depuis JSON
+        frame_log_interval = dummy_config.get('ui', 'realsense.logging.frame_log_interval', 30)
+        frame_delay = dummy_config.get('test', 'frame_delay', 0.01)
+        
         while time.time() - start_time < duration:
             ret, color_img, depth_img = camera.get_frames()
             if ret:
                 frame_count += 1
                 
-                # Test d'une mesure de profondeur au centre
                 if depth_img is not None:
                     h, w = depth_img.shape
                     center_depth = camera.get_depth_at_pixel(w//2, h//2)
-                    if frame_count % 30 == 0:  # Log toutes les 30 frames
+                    if frame_count % frame_log_interval == 0:
                         logger.info(f"📏 Profondeur centre: {center_depth:.3f}m")
             
-            time.sleep(0.01)
+            time.sleep(frame_delay)
         
         fps_measured = frame_count / duration
         logger.info(f"✅ Test réussi: {frame_count} frames en {duration}s ({fps_measured:.1f} FPS)")
         
-        # Test des intrinsèques
         intrinsics = camera.get_intrinsics()
         if intrinsics:
             logger.info("📐 Paramètres intrinsèques récupérés")
@@ -504,24 +501,22 @@ def test_realsense(device_serial: Optional[str] = None, duration: float = 5.0) -
 # ============================================================================
 
 if __name__ == "__main__":
-    # Configuration du logging pour les tests
     logging.basicConfig(level=logging.INFO)
     
     print("🎥 Test du driver RealSense")
     print("=" * 40)
     
-    # 1. Détection des caméras
     cameras = list_available_realsense()
     print(f"Caméras RealSense détectées: {len(cameras)}")
     for cam in cameras:
         print(f"  - {cam['name']} (S/N: {cam['serial']})")
     
     if cameras:
-        # 2. Test de la première caméra
         device_serial = cameras[0]['serial']
         print(f"\nTest de la caméra {device_serial}...")
         
-        success = test_realsense(device_serial, duration=3.0)
+        test_duration = 3.0
+        success = test_realsense(device_serial, duration=test_duration)
         if success:
             print("✅ Test réussi!")
         else:

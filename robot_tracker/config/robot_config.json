@@ -1,0 +1,32 @@
+{
+  "communication": {
+    "interface": "tcp",
+    "ip": "192.168.1.100",
+    "port": 502,
+    "timeout": 5000
+  },
+  "staubli": {
+    "enabled": false,
+    "language": "VAL3",
+    "move_command": "MOVE joint",
+    "speed_default": 50
+  },
+  "kuka": {
+    "enabled": false,
+    "language": "KRL",
+    "move_command": "LIN",
+    "speed_default": 100
+  },
+  "abb": {
+    "enabled": false,
+    "language": "RAPID",
+    "move_command": "MoveL",
+    "speed_default": "v100"
+  },
+  "universal_robots": {
+    "enabled": false,
+    "language": "GCODE",
+    "move_command": "G01",
+    "speed_default": 1000
+  }
+}

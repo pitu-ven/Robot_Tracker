@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 robot_tracker/hardware/usb3_camera_driver.py
-Driver pour caméra USB3 CMOS avec correction image noire - Version 1.4
-Modification: Correction agressive du problème d'image noire avec validation flux
+Driver pour caméra USB3 CMOS entièrement configuré - Version 1.6
+Modification: Correction finale des valeurs statiques restantes
 """
 
 import cv2
@@ -20,7 +20,7 @@ class USB3CameraError(Exception):
     pass
 
 class USB3CameraDriver:
-    """Driver pour caméra USB3 CMOS avec correction agressive image noire"""
+    """Driver pour caméra USB3 CMOS entièrement configuré via JSON"""
     
     def __init__(self, device_id: int = 0, config: Optional[Dict] = None):
         self.device_id = device_id
@@ -31,13 +31,13 @@ class USB3CameraDriver:
         self.is_open = False
         self.is_streaming = False
         
-        # Configuration depuis JSON
+        # Configuration depuis JSON avec fallback
         self.width = self.config.get('width', 640)
         self.height = self.config.get('height', 480)
         self.fps = self.config.get('fps', 30)
         self.buffer_size = self.config.get('buffer_size', 1)
         
-        # PARAMÈTRES AGRESSIFS POUR CORRECTION IMAGE NOIRE
+        # Paramètres pour correction image noire
         self.auto_exposure = self.config.get('auto_exposure', True)
         self.exposure = self.config.get('exposure', -1)
         self.gain = self.config.get('gain', 100)
@@ -45,7 +45,7 @@ class USB3CameraDriver:
         self.contrast = self.config.get('contrast', 100)
         self.saturation = self.config.get('saturation', 100)
         
-        # Paramètres de correction avancés
+        # Paramètres de correction avancés configurés
         self.stabilization_delay = self.config.get('stabilization_delay', 2.0)
         self.intensity_target = self.config.get('intensity_target', 30.0)
         self.max_correction_attempts = self.config.get('max_correction_attempts', 5)
@@ -57,7 +57,8 @@ class USB3CameraDriver:
         self.frame_lock = Lock()
         self.latest_frame = None
         
-        logger.info(f"🔧 USB3CameraDriver v1.4 initialisé (device_id={device_id})")
+        version_info = self.config.get('version_info', '1.6')
+        logger.info(f"🔧 USB3CameraDriver v{version_info} initialisé (device_id={device_id})")
     
     def open(self) -> bool:
         """Ouvre la connexion avec configuration agressive anti-image-noire"""
@@ -68,15 +69,11 @@ class USB3CameraDriver:
             
             logger.info(f"📷 Ouverture caméra USB3 {self.device_id} avec correction image noire...")
             
-            # Ouverture avec backend optimal
             success = self._open_with_best_backend()
             if not success:
                 return False
             
-            # Configuration agressive
             self._configure_aggressive_anti_black()
-            
-            # Validation avec correction automatique
             validation_success = self._validate_and_correct_image()
             
             if validation_success:
@@ -111,7 +108,6 @@ class USB3CameraDriver:
                     self.cap = cv2.VideoCapture(self.device_id, backend_id)
                 
                 if self.cap.isOpened():
-                    # Test rapide de capture
                     ret, frame = self.cap.read()
                     if ret and frame is not None:
                         logger.info(f"✅ Backend {backend_name} sélectionné")
@@ -138,28 +134,23 @@ class USB3CameraDriver:
         
         logger.info("🔧 Configuration AGRESSIVE anti-image-noire...")
         
-        # Résolution et buffer
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, self.buffer_size)
         
-        # ÉTAPE 1: Auto-exposition forcée
         logger.debug("📸 Forçage auto-exposition...")
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
         
-        # ÉTAPE 2: Paramètres au maximum
         logger.debug("💡 Paramètres luminosité au maximum...")
         self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 1.0)
         self.cap.set(cv2.CAP_PROP_CONTRAST, 1.0)
         self.cap.set(cv2.CAP_PROP_SATURATION, 1.0)
         self.cap.set(cv2.CAP_PROP_GAIN, self.gain)
         
-        # ÉTAPE 3: Attente stabilisation prolongée
         logger.debug(f"⏳ Stabilisation {self.stabilization_delay}s...")
         time.sleep(self.stabilization_delay)
         
-        # Log des paramètres appliqués
         self._log_applied_parameters()
     
     def _validate_and_correct_image(self) -> bool:
@@ -169,9 +160,11 @@ class USB3CameraDriver:
         for attempt in range(self.max_correction_attempts):
             logger.debug(f"🧪 Tentative {attempt + 1}/{self.max_correction_attempts}")
             
-            # Test de capture multiple
             intensities = []
-            for i in range(5):
+            test_frames = self.config.get('validation.test_frames', 5)
+            test_delay = self.config.get('validation.test_delay', 0.2)
+            
+            for i in range(test_frames):
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
                     intensity = np.mean(frame)
@@ -179,7 +172,7 @@ class USB3CameraDriver:
                     logger.debug(f"   Capture {i+1}: intensité {intensity:.1f}")
                 else:
                     logger.debug(f"   Capture {i+1}: ÉCHEC")
-                time.sleep(0.2)
+                time.sleep(test_delay)
             
             if not intensities:
                 logger.warning("❌ Aucune capture réussie")
@@ -188,17 +181,20 @@ class USB3CameraDriver:
             avg_intensity = np.mean(intensities)
             logger.info(f"📊 Intensité moyenne tentative {attempt + 1}: {avg_intensity:.1f}")
             
-            # Critères de validation
-            if avg_intensity >= self.intensity_target:
+            # Seuils configurables
+            target_intensity = self.intensity_target
+            min_acceptable_ratio = self.config.get('validation.min_acceptable_ratio', 0.3)
+            min_acceptable = target_intensity * min_acceptable_ratio
+            
+            if avg_intensity >= target_intensity:
                 logger.info(f"✅ Validation réussie (intensité: {avg_intensity:.1f})")
                 return True
-            elif avg_intensity >= (self.intensity_target * 0.3):
+            elif avg_intensity >= min_acceptable:
                 logger.info(f"⚠️ Intensité acceptable (intensité: {avg_intensity:.1f})")
                 return True
             else:
                 logger.warning(f"⚠️ Intensité insuffisante: {avg_intensity:.1f}")
                 
-                # Correction progressive
                 if attempt < self.max_correction_attempts - 1:
                     self._apply_progressive_correction(attempt + 1)
         
@@ -209,33 +205,33 @@ class USB3CameraDriver:
         """Applique une correction progressive selon la tentative"""
         logger.debug(f"🔧 Correction progressive #{attempt}...")
         
+        gain_multiplier_1 = self.config.get('correction.gain_multiplier_1', 1.5)
+        gain_multiplier_2 = self.config.get('correction.gain_multiplier_2', 2.0)
+        emergency_gain = self.config.get('correction.emergency_gain', 255)
+        correction_delay = self.config.get('correction.delay', 1.0)
+        
         if attempt == 1:
-            # Tentative 1: Gain plus élevé
             logger.debug("📈 Augmentation gain...")
-            self.cap.set(cv2.CAP_PROP_GAIN, self.gain * 1.5)
+            self.cap.set(cv2.CAP_PROP_GAIN, self.gain * gain_multiplier_1)
             
         elif attempt == 2:
-            # Tentative 2: Exposition manuelle
             logger.debug("📸 Passage exposition manuelle...")
             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
             self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
             
         elif attempt == 3:
-            # Tentative 3: Exposition encore plus élevée
             logger.debug("📸 Exposition maximale...")
             self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure + 1)
-            self.cap.set(cv2.CAP_PROP_GAIN, self.gain * 2)
+            self.cap.set(cv2.CAP_PROP_GAIN, self.gain * gain_multiplier_2)
             
         elif attempt == 4:
-            # Tentative 4: Configuration d'urgence
             logger.debug("🚨 Configuration d'urgence...")
             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
             self.cap.set(cv2.CAP_PROP_BRIGHTNESS, 1.0)
             self.cap.set(cv2.CAP_PROP_CONTRAST, 1.0)
-            self.cap.set(cv2.CAP_PROP_GAIN, 255)  # Gain maximum
+            self.cap.set(cv2.CAP_PROP_GAIN, emergency_gain)
         
-        # Attente après chaque correction
-        time.sleep(1.0)
+        time.sleep(correction_delay)
     
     def _log_applied_parameters(self):
         """Affiche les paramètres réellement appliqués"""
@@ -266,10 +262,12 @@ class USB3CameraDriver:
         try:
             ret, frame = self.cap.read()
             if ret and frame is not None:
-                # Diagnostic léger
-                if self.config.get('debug_intensity', False):
+                debug_intensity = self.config.get('debug.intensity', False)
+                if debug_intensity:
                     intensity = np.mean(frame)
-                    if intensity < self.intensity_target * 0.5:
+                    target_ratio = self.config.get('debug.target_ratio', 0.5)
+                    
+                    if intensity < self.intensity_target * target_ratio:
                         logger.debug(f"⚠️ Frame sombre: {intensity:.1f}")
                 
                 return frame
@@ -289,9 +287,11 @@ class USB3CameraDriver:
         logger.info("🔬 Validation flux actuel...")
         
         try:
-            # Test sur 10 frames
             results = []
-            for i in range(10):
+            validation_frames = self.config.get('validation.stream_frames', 10)
+            validation_delay = self.config.get('validation.stream_delay', 0.1)
+            
+            for i in range(validation_frames):
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
                     intensity = np.mean(frame)
@@ -307,23 +307,29 @@ class USB3CameraDriver:
                         'shape': frame.shape
                     })
                 
-                time.sleep(0.1)
+                time.sleep(validation_delay)
             
             if not results:
                 return {'status': 'no_frames'}
             
-            # Calcul des statistiques
             avg_intensity = np.mean([r['intensity'] for r in results])
             min_intensity = min([r['intensity'] for r in results])
             max_intensity = max([r['intensity'] for r in results])
             avg_std = np.mean([r['std'] for r in results])
             
-            # Classification
-            if avg_intensity < 1.0:
+            # Classification avec seuils configurables
+            very_low_threshold = self.config.get('classification.very_low_threshold', 1.0)
+            low_threshold_ratio = self.config.get('classification.low_threshold_ratio', 0.3)
+            medium_threshold_ratio = self.config.get('classification.medium_threshold_ratio', 0.7)
+            
+            low_threshold = self.intensity_target * low_threshold_ratio
+            medium_threshold = self.intensity_target * medium_threshold_ratio
+            
+            if avg_intensity < very_low_threshold:
                 status = 'black'
-            elif avg_intensity < self.intensity_target * 0.3:
+            elif avg_intensity < low_threshold:
                 status = 'very_dark'
-            elif avg_intensity < self.intensity_target * 0.7:
+            elif avg_intensity < medium_threshold:
                 status = 'dark'
             else:
                 status = 'good'
@@ -356,11 +362,11 @@ class USB3CameraDriver:
             return False
         
         try:
-            # Validation avant streaming
             validation = self.validate_current_stream()
-            if validation['status'] in ['black', 'error']:
+            problematic_statuses = self.config.get('streaming.problematic_statuses', ['black', 'error'])
+            
+            if validation['status'] in problematic_statuses:
                 logger.warning(f"⚠️ Flux problématique: {validation['status']}")
-                # Tentative de correction
                 self._apply_progressive_correction(1)
             
             self.streaming_stop_event.clear()
@@ -382,8 +388,9 @@ class USB3CameraDriver:
         
         self.streaming_stop_event.set()
         
+        join_timeout = self.config.get('streaming.join_timeout', 2.0)
         if self.streaming_thread and self.streaming_thread.is_alive():
-            self.streaming_thread.join(timeout=2.0)
+            self.streaming_thread.join(timeout=join_timeout)
         
         self.is_streaming = False
         logger.info("⏹️ Streaming USB3 arrêté")
@@ -391,6 +398,8 @@ class USB3CameraDriver:
     def _streaming_loop(self):
         """Boucle de streaming optimisée"""
         frame_count = 0
+        log_interval = self.config.get('streaming.log_interval_frames', 300)
+        frame_delay = 1.0 / self.fps
         
         while not self.streaming_stop_event.is_set():
             frame = self.get_frame()
@@ -400,12 +409,11 @@ class USB3CameraDriver:
                     self.latest_frame = frame.copy()
                 frame_count += 1
                 
-                # Log périodique de diagnostic
-                if frame_count % 300 == 0:  # Toutes les 10s environ
+                if frame_count % log_interval == 0:
                     intensity = np.mean(frame)
                     logger.debug(f"🎬 Frame {frame_count}: intensité {intensity:.1f}")
             
-            time.sleep(1.0 / self.fps)
+            time.sleep(frame_delay)
     
     def get_latest_frame(self) -> Optional[np.ndarray]:
         """Récupère la dernière frame du streaming"""
@@ -435,7 +443,6 @@ class USB3CameraDriver:
                 'fps': 0
             }
         
-        # Validation temps réel
         validation = self.validate_current_stream()
         
         return {
@@ -460,30 +467,31 @@ class USB3CameraDriver:
         
         logger.info("🔧 Reconfiguration spéciale luminosité...")
         
-        # Configuration d'urgence
-        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        time.sleep(1.0)
+        stabilization_delay = self.config.get('reconfiguration.stabilization_delay', 1.0)
+        brightness_threshold = self.config.get('reconfiguration.brightness_threshold', 10.0)
+        emergency_gain = self.config.get('reconfiguration.emergency_gain', 255)
+        success_threshold = self.config.get('reconfiguration.success_threshold', 5.0)
         
-        # Test après auto-exposition
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        time.sleep(stabilization_delay)
+        
         ret, frame = self.cap.read()
         if ret and frame is not None:
             intensity = np.mean(frame)
             logger.info(f"📊 Intensité après auto-exposition: {intensity:.1f}")
             
-            if intensity < 10.0:
-                # Forcer exposition manuelle
+            if intensity < brightness_threshold:
                 logger.info("🔧 Passage exposition manuelle d'urgence...")
                 self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
-                self.cap.set(cv2.CAP_PROP_EXPOSURE, 0)  # Exposition maximale
-                self.cap.set(cv2.CAP_PROP_GAIN, 255)
-                time.sleep(1.0)
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, 0)
+                self.cap.set(cv2.CAP_PROP_GAIN, emergency_gain)
+                time.sleep(stabilization_delay)
                 
-                # Test final
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
                     final_intensity = np.mean(frame)
                     logger.info(f"📊 Intensité finale: {final_intensity:.1f}")
-                    return final_intensity > 5.0
+                    return final_intensity > success_threshold
         
         return False
     
@@ -497,11 +505,16 @@ class USB3CameraDriver:
         self.close()
 
 # Fonctions utilitaires améliorées
-def list_available_cameras() -> List[Dict[str, Any]]:
+def list_available_cameras(config=None) -> List[Dict[str, Any]]:
     """Liste toutes les caméras USB avec validation"""
     cameras = []
+    if config is None:
+        config = type('Config', (), {'get': lambda self, section, key, default=None: default})()
     
-    for device_id in range(6):
+    max_device_scan = config.get('hardware', 'usb3_camera.max_device_scan', 6)
+    brightness_threshold = config.get('hardware', 'usb3_camera.brightness_threshold', 10)
+    
+    for device_id in range(max_device_scan):
         cap = cv2.VideoCapture(device_id)
         
         if cap.isOpened():
@@ -520,7 +533,7 @@ def list_available_cameras() -> List[Dict[str, Any]]:
                     'height': height,
                     'fps': fps,
                     'intensity': intensity,
-                    'status': 'good' if intensity > 10 else 'dark',
+                    'status': 'good' if intensity > brightness_threshold else 'dark',
                     'type': 'USB3'
                 })
         
@@ -529,47 +542,64 @@ def list_available_cameras() -> List[Dict[str, Any]]:
     logger.info(f"🔍 {len(cameras)} caméra(s) USB détectée(s)")
     return cameras
 
-def test_camera(device_id: int, duration: float = 5.0) -> bool:
+def test_camera(device_id: int, duration: float = 5.0, config=None) -> bool:
     """Test complet d'une caméra USB avec diagnostic"""
-    config = {
+    if config is None:
+        config = type('Config', (), {'get': lambda self, section, key, default=None: default})()
+    
+    test_config = {
         'auto_exposure': True,
         'exposure': -1,
         'gain': 100,
         'brightness': 255,
         'contrast': 100,
-        'intensity_target': 30.0,
+        'intensity_target': config.get('hardware', 'usb3_camera.intensity_target', 30.0),
         'stabilization_delay': 2.0,
-        'max_correction_attempts': 3
+        'max_correction_attempts': 3,
+        'reconfiguration': {
+            'brightness_threshold': config.get('hardware', 'usb3_camera.brightness_threshold', 10.0),
+            'success_threshold': 5.0
+        },
+        'test': {
+            'good_frame_threshold': 10,
+            'min_fps_threshold': 5,
+            'min_success_rate': 0.5,
+            'sleep_interval': 0.1
+        }
     }
     
     try:
-        with USB3CameraDriver(device_id, config) as camera:
+        with USB3CameraDriver(device_id, test_config) as camera:
             if not camera.is_open:
                 return False
             
-            # Validation initiale
             validation = camera.validate_current_stream()
             logger.info(f"📊 Validation initiale: {validation.get('status', 'unknown')}")
             
-            # Test streaming
             start_time = time.time()
             frame_count = 0
             good_frames = 0
+            
+            # Seuils configurables pour le test
+            good_frame_threshold = config['test']['good_frame_threshold']
+            min_fps_threshold = config['test']['min_fps_threshold']
+            min_success_rate = config['test']['min_success_rate']
+            sleep_interval = config['test']['sleep_interval']
             
             while time.time() - start_time < duration:
                 frame = camera.get_frame()
                 if frame is not None:
                     frame_count += 1
                     intensity = np.mean(frame)
-                    if intensity > 10:
+                    if intensity > good_frame_threshold:
                         good_frames += 1
-                time.sleep(0.1)
+                time.sleep(sleep_interval)
             
             fps_measured = frame_count / duration
             success_rate = good_frames / frame_count if frame_count > 0 else 0
             
             logger.info(f"📊 Test: {frame_count} frames, {fps_measured:.1f} FPS, {success_rate:.1%} bonnes frames")
-            return success_rate > 0.5 and fps_measured > 5
+            return success_rate > min_success_rate and fps_measured > min_fps_threshold
             
     except Exception as e:
         logger.error(f"❌ Test échoué: {e}")

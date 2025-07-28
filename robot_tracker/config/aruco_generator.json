@@ -1,0 +1,117 @@
+{
+  "aruco_generator": {
+    "window": {
+      "title": "Générateur de Codes ArUco - Robot Tracker",
+      "width": 900,
+      "height": 700,
+      "resizable": true
+    },
+    "dictionaries": [
+      "DICT_4X4_50",
+      "DICT_5X5_100",
+      "DICT_6X6_250",
+      "DICT_7X7_1000",
+      "DICT_ARUCO_ORIGINAL",
+      "DICT_APRILTAG_16h5",
+      "DICT_APRILTAG_25h9"
+    ],
+    "default_dictionary": "DICT_5X5_100",
+    "marker_size": {
+      "min": 50,
+      "max": 1000,
+      "default": 200,
+      "step": 10
+    },
+    "id_range": {
+      "min": 0,
+      "max": 9999,
+      "default_start": 0,
+      "default_end": 9
+    },
+    "display": {
+      "marker_display_size": 120,
+      "grid_spacing": 10,
+      "markers_per_row": 6
+    },
+    "generation": {
+      "max_markers_warning": 100,
+      "thread_sleep_ms": 10
+    },
+    "export": {
+      "default_save_dir": "C:/0_COMPOSITADOUR/6_JERICO/Robot_Tracker/ArUco",
+      "folder_name_format": "{dictionary}_{size}px_{date}",
+      "date_format": "%Y%m%d_%H%M",
+      "filename_format": "aruco_{dictionary}_{id:04d}.png",
+      "high_quality_scale": 4,
+      "border_size": 20,
+      "text_height": 40,
+      "font_scale": 1.0,
+      "image_format": "png"
+    },
+    "default_options": {
+      "add_border": true,
+      "add_id_text": true,
+      "high_quality": true
+    },
+    "printing": {
+      "enabled": false,
+      "markers_per_row": 4,
+      "markers_per_col": 6,
+      "margin": 50,
+      "page_size": "A4"
+    },
+    "labels": {
+      "config_group": "📋 Configuration",
+      "dictionary": "Dictionnaire ArUco:",
+      "marker_size": "Taille marqueur (pixels):",
+      "id_range": "Plage d'IDs:",
+      "print_options": "Options d'export:",
+      "add_border": "Ajouter bordure",
+      "add_id_text": "Ajouter ID en texte",
+      "high_quality": "Haute qualité",
+      "controls_group": "🎬 Contrôles",
+      "generate_button": "🎯 Générer Marqueurs",
+      "stop_button": "⏹️ Arrêter",
+      "display_group": "🖼️ Aperçu des Marqueurs",
+      "save_button": "💾 Sauvegarder Images",
+      "print_button": "🖨️ Imprimer",
+      "close_button": "❌ Fermer"
+    },
+    "messages": {
+      "ready": "Prêt à générer",
+      "no_markers": "Aucun marqueur généré\n\nConfigurez les paramètres et cliquez sur 'Générer'",
+      "generating": "Génération en cours...",
+      "stopped": "Génération arrêtée",
+      "completed": "✅ Marqueurs générés avec succès",
+      "error": "❌ Erreur de génération",
+      "print_success": "Impression terminée avec succès",
+      "print_disabled": "Impression temporairement désactivée",
+      "save_success": "Sauvegarde terminée avec succès",
+      "invalid_range": "Plage d'IDs invalide",
+      "too_many_markers": "Attention: nombre élevé de marqueurs à générer",
+      "folder_created": "📁 Dossier créé: {folder_name}",
+      "files_saved": "💾 {count} fichiers sauvegardés"
+    },
+    "tooltips": {
+      "dictionary": "Sélectionnez le type de dictionnaire ArUco à utiliser",
+      "marker_size": "Taille en pixels du marqueur généré (recommandé: 200px)",
+      "id_range": "Plage d'identifiants des marqueurs à générer",
+      "add_border": "Ajoute une bordure blanche autour du marqueur pour l'impression",
+      "add_id_text": "Ajoute l'ID du marqueur en texte sous l'image",
+      "high_quality": "Génère des images haute résolution (facteur x4)",
+      "print_button": "Fonctionnalité d'impression temporairement désactivée",
+      "save_path": "Les fichiers seront sauvegardés dans un dossier nommé selon le format: type_taille_date"
+    },
+    "help": {
+      "folder_naming": "Convention de nommage des dossiers: {dictionnaire}_{taille}px_{AAAAMMJJ_HHMM}",
+      "file_naming": "Convention de nommage des fichiers: aruco_{dictionnaire}_{ID}.png",
+      "recommended_settings": {
+        "dictionary": "DICT_5X5_100 (bon compromis précision/robustesse)",
+        "size": "200px (optimal pour impression A4)",
+        "border": "Recommandé pour l'impression",
+        "id_text": "Utile pour l'identification visuelle",
+        "high_quality": "Recommandé pour l'impression haute résolution"
+      }
+    }
+  }
+}

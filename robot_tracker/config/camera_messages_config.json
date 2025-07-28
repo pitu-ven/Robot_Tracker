@@ -1,0 +1,62 @@
+{
+  "camera_tab": {
+    "labels": {
+      "show_depth": "Afficher vue profondeur",
+      "show_stats": "Afficher statistiques",
+      "capture_frame": "📸 Capturer frame",
+      "save_image": "💾 Sauvegarder image",
+      "clear_log": "🗑️ Effacer log",
+      "no_camera_active": "Aucune caméra active\n\nSélectionnez et ouvrez une caméra\npour voir le streaming temps réel"
+    },
+    "tooltips": {
+      "show_depth": "Active la vue profondeur à côté de la vue RGB (RealSense uniquement)",
+      "no_depth": "Vue profondeur disponible uniquement avec RealSense",
+      "depth_available": "Active la vue profondeur à côté de la vue RGB"
+    },
+    "messages": {
+      "detecting": "🔍 Détection des caméras...",
+      "cameras_found": "✅ {count} caméra(s) détectée(s)",
+      "no_cameras": "⚠️ Aucune caméra détectée",
+      "detection_error": "❌ Erreur détection: {error}",
+      "camera_selected": "📷 Caméra sélectionnée: {name}",
+      "no_selection": "⚠️ Aucune caméra sélectionnée",
+      "already_open": "⚠️ Caméra {alias} déjà ouverte",
+      "opening": "📷 Ouverture {name}...",
+      "opened_success": "✅ Caméra {alias} ouverte avec succès",
+      "open_failed": "❌ Échec ouverture {name}",
+      "open_error": "❌ Erreur ouverture caméra: {error}",
+      "closed": "✅ Caméra {alias} fermée",
+      "close_error": "❌ Erreur fermeture {alias}",
+      "close_exception": "❌ Erreur fermeture caméra {alias}: {error}",
+      "display_added": "🖼️ Affichage {alias} ajouté (vue double: {dual})",
+      "display_removed": "🖼️ Affichage {alias} supprimé",
+      "starting_stream": "🎬 Démarrage du streaming...",
+      "stream_started": "✅ Streaming démarré",
+      "start_stream_error": "❌ Erreur démarrage streaming: {error}",
+      "stopping_stream": "🛑 Arrêt du streaming...",
+      "stream_stopped": "✅ Streaming arrêté",
+      "stop_stream_error": "❌ Erreur arrêt streaming: {error}",
+      "frame_update_error": "❌ Erreur mise à jour frames: {error}",
+      "stats_error": "❌ Erreur mise à jour stats: {error}",
+      "refresh_rate": "🔄 Refresh rate: {fps:.1f} FPS",
+      "depth_toggled": "👁️ Vue profondeur: {state}",
+      "camera_clicked": "🖱️ Clic sur caméra: {alias}",
+      "no_camera_capture": "⚠️ Aucune caméra sélectionnée pour la capture",
+      "frame_captured": "📸 Frame capturée: {alias}",
+      "capture_failed": "❌ Impossible de capturer une frame de {alias}",
+      "capture_error": "❌ Erreur capture frame: {error}",
+      "no_camera_save": "⚠️ Aucune caméra sélectionnée pour la sauvegarde",
+      "save_success": "💾 Image RGB sauvegardée: {filepath}",
+      "depth_save_success": "💾 Image profondeur sauvegardée: {filepath}",
+      "save_error": "❌ Erreur sauvegarde: {filepath}",
+      "cleanup": "🔄 Nettoyage terminé"
+    },
+    "save": {
+      "dialog_title": "Sauvegarder image",
+      "image_formats": "Images (*.jpg *.jpeg *.png);;Tous les fichiers (*)"
+    },
+    "styles": {
+      "default_label": "QLabel { font-size: 14px; color: #666; border: 2px dashed #ccc; border-radius: 10px; padding: 50px; background-color: #f9f9f9; }"
+    }
+  }
+}
