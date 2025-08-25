@@ -1,6 +1,6 @@
 # tests/test_camera_fix.py
-# Version 1.0 - Test des corrections camera_manager et camera_tab
-# Modification: Script de test pour vérifier les corrections apportées
+# Version 2.0 - Test des corrections camera_manager et camera_tab avec corrections imports
+# Modification: Correction des erreurs d'import relatif et dépendances manquantes
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -10,13 +10,38 @@ import os
 import logging
 
 # Ajout du chemin parent pour les imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+def check_pyrealsense_availability():
+    """Vérifie la disponibilité de pyrealsense2"""
+    try:
+        import pyrealsense2 as rs
+        return True, "Disponible"
+    except ImportError as e:
+        return False, f"Non disponible: {e}"
 
 def test_camera_manager_import():
-    """Test d'import et de la méthode is_camera_open"""
+    """Test d'import et de la méthode is_camera_open avec gestion pyrealsense2"""
     print("🧪 Test import CameraManager...")
     
+    # Vérification préalable pyrealsense2
+    has_realsense, rs_msg = check_pyrealsense_availability()
+    if not has_realsense:
+        print(f"⚠️ RealSense non disponible: {rs_msg.split(':')[-1].strip()}")
+    
     try:
+        # Mock temporaire pour pyrealsense2 si nécessaire
+        if not has_realsense:
+            sys.modules['pyrealsense2'] = type('MockRS', (), {
+                'pipeline': type('Pipeline', (), {}),
+                'config': type('Config', (), {}),
+                'align': type('Align', (), {}),
+                'stream': type('Stream', (), {'color': 1, 'depth': 2}),
+                'format': type('Format', (), {'bgr8': 1, 'z16': 2}),
+                'colorizer': type('Colorizer', (), {})
+            })()
+        
         from core.camera_manager import CameraManager
         
         # Configuration dummy
@@ -49,14 +74,17 @@ def test_camera_manager_import():
         return True
         
     except ImportError as e:
-        print(f"❌ Erreur import CameraManager: {e}")
+        if "pyrealsense2" in str(e):
+            print(f"❌ Erreur import USB3CameraDriver: {e}")
+        else:
+            print(f"❌ Erreur import CameraManager: {e}")
         return False
     except Exception as e:
         print(f"❌ Erreur test CameraManager: {e}")
         return False
 
 def test_camera_tab_import():
-    """Test d'import du CameraTab"""
+    """Test d'import du CameraTab avec correction imports relatifs"""
     print("\n🧪 Test import CameraTab...")
     
     try:
@@ -78,6 +106,19 @@ def test_camera_tab_import():
             }.get(f"{section}.{key}", default)
         })()
         
+        # Mock des dépendances pyrealsense2 si nécessaire 
+        has_realsense, _ = check_pyrealsense_availability()
+        if not has_realsense:
+            sys.modules['pyrealsense2'] = type('MockRS', (), {
+                'pipeline': type('Pipeline', (), {}),
+                'config': type('Config', (), {}),
+                'align': type('Align', (), {}),
+                'stream': type('Stream', (), {'color': 1, 'depth': 2}),
+                'format': type('Format', (), {'bgr8': 1, 'z16': 2}),
+                'colorizer': type('Colorizer', (), {})
+            })()
+        
+        # Import direct sans relatifs
         from ui.camera_tab import CameraTab
         print(f"✅ CameraTab importé: {CameraTab.__name__}")
         
@@ -93,6 +134,20 @@ def test_camera_tab_import():
 def test_integration():
     """Test d'intégration CameraManager + CameraTab"""
     print("\n🧪 Test intégration CameraManager + CameraTab...")
+    
+    # Vérification préalable
+    has_realsense, rs_msg = check_pyrealsense_availability()
+    if not has_realsense:
+        print(f"⚠️ RealSense non disponible: {rs_msg.split(':')[-1].strip()}")
+        # Mock pour permettre l'intégration
+        sys.modules['pyrealsense2'] = type('MockRS', (), {
+            'pipeline': type('Pipeline', (), {}),
+            'config': type('Config', (), {}),
+            'align': type('Align', (), {}),
+            'stream': type('Stream', (), {'color': 1, 'depth': 2}),
+            'format': type('Format', (), {'bgr8': 1, 'z16': 2}),
+            'colorizer': type('Colorizer', (), {})
+        })()
     
     try:
         from core.camera_manager import CameraManager
