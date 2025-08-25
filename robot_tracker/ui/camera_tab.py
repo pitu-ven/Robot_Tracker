@@ -408,7 +408,7 @@ class CameraTab(QWidget):
         
         try:
             alias = f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
-            success = self.camera_manager.open_camera(alias, self.selected_camera)
+            success = self.camera_manager.open_camera(self.selected_camera, alias)
             
             if success:
                 # Création widget d'affichage
