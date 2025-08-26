@@ -315,11 +315,11 @@ class CameraTab(QWidget):
             cursor.removeSelectedText()
     
     def _detect_cameras(self):
-        """Détecte les caméras disponibles"""
+        """Détecte les caméras disponibles - VERSION CORRIGÉE"""
         self._log("🔍 Détection des caméras...")
         
         try:
-            # Utilisation du camera_manager pour détecter
+            # ✅ CORRECT - utilise self.camera_manager
             cameras = self.camera_manager.detect_all_cameras()
             self.available_cameras = cameras
             
@@ -330,7 +330,6 @@ class CameraTab(QWidget):
                     display_name = f"{camera.camera_type.value}: {camera.name}"
                     self.camera_combo.addItem(display_name, camera)
                 else:
-                    # Fallback
                     display_name = f"Caméra: {getattr(camera, 'name', 'Unknown')}"
                     self.camera_combo.addItem(display_name, camera)
             

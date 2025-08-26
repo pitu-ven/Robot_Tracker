@@ -1,6 +1,6 @@
 # core/camera_manager.py
-# Version 2.9 - Correction ouverture RealSense avec configuration
-# Modification: Ajout configuration pour RealSenseCamera dans _create_camera_instance
+# Version 2.10 - Correction compatibilité avec main_window
+# Modification: Ajout méthodes manquantes pour compatibilité avec l'interface existante
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -48,7 +48,7 @@ class CameraInfo:
     details: Dict[str, Any]
 
 class CameraManager:
-    """Gestionnaire central pour toutes les caméras - Version avec ouverture RealSense corrigée"""
+    """Gestionnaire central pour toutes les caméras - Version avec compatibilité interface"""
     
     def __init__(self, config):
         self.config = config
@@ -57,7 +57,7 @@ class CameraManager:
         self.active_cameras: Dict[str, Any] = {}
         self.available_cameras: List[CameraInfo] = []
         
-        # Streaming
+        # Streaming global
         self.streaming = False
         self.streaming_thread = None
         self.streaming_stop_event = Event()
@@ -77,7 +77,48 @@ class CameraManager:
         self.auto_detect_interval = self.config.get('camera', 'manager.auto_detect_interval', 5.0)
         self.max_frame_buffer = self.config.get('camera', 'manager.max_frame_buffer', 5)
         
-        logger.info("🎥 CameraManager v2.9 initialisé (correction ouverture RealSense)")
+        logger.info("🎥 CameraManager v2.10 initialisé (correction compatibilité)")
+    
+    # ============================================================================
+    # MÉTHODES COMPATIBILITÉ - Pour interface existante
+    # ============================================================================
+    
+    def get(self, section: str, key: str, default=None):
+        """Méthode de compatibilité pour accéder à la configuration"""
+        return self.config.get(section, key, default)
+    
+    def stop_streaming(self):
+        """Méthode de compatibilité pour arrêt global du streaming"""
+        try:
+            self.streaming = False
+            if self.streaming_thread and self.streaming_thread.is_alive():
+                self.streaming_stop_event.set()
+                self.streaming_thread.join(timeout=2.0)
+            
+            # Arrêt du streaming pour toutes les caméras actives
+            for alias in list(self.active_cameras.keys()):
+                camera_data = self.active_cameras[alias]
+                if camera_data['is_streaming']:
+                    self._stop_camera_streaming(alias)
+            
+            logger.info("🛑 Streaming global arrêté")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur arrêt streaming global: {e}")
+    
+    def _stop_camera_streaming(self, alias: str):
+        """Arrête le streaming d'une caméra spécifique"""
+        try:
+            if alias in self.active_cameras:
+                camera_data = self.active_cameras[alias]
+                camera_data['is_streaming'] = False
+                logger.debug(f"🛑 Streaming {alias} arrêté")
+        except Exception as e:
+            logger.error(f"❌ Erreur arrêt streaming {alias}: {e}")
+    
+    # ============================================================================
+    # MÉTHODES PRINCIPALES
+    # ============================================================================
     
     def detect_all_cameras(self) -> List[CameraInfo]:
         """Détecte toutes les caméras disponibles (USB3 + RealSense)"""
@@ -107,7 +148,7 @@ class CameraManager:
             except Exception as e:
                 logger.warning(f"⚠️ Erreur détection RealSense: {e}")
         
-        # 2. Détection USB3 en évitant les doublons
+        # 2. Détection USB3
         try:
             usb3_cameras = list_available_cameras()
             logger.info(f"🔌 USB3: {len(usb3_cameras)} caméra(s) détectée(s)")
@@ -115,7 +156,6 @@ class CameraManager:
             for usb_cam in usb3_cameras:
                 usb_name = usb_cam.get('name', f"USB3 Camera {usb_cam.get('index', 'unknown')}")
                 
-                # Filtrage des caméras RealSense déjà détectées
                 if any(serial in usb_name for serial in realsense_serials):
                     logger.debug(f"🔄 Ignoré doublon USB3: {usb_name}")
                     continue
@@ -131,9 +171,7 @@ class CameraManager:
         except Exception as e:
             logger.warning(f"⚠️ Erreur détection USB3: {e}")
         
-        # Mise à jour cache
         self.available_cameras = all_cameras
-        
         logger.info(f"✅ Détection terminée: {len(all_cameras)} caméra(s) unique(s)")
         return all_cameras
     
@@ -155,31 +193,27 @@ class CameraManager:
         
         with self.cameras_lock:
             try:
-                # Caméra déjà ouverte ?
                 if alias in self.active_cameras:
                     logger.warning(f"⚠️ Caméra {alias} déjà ouverte")
                     return False
                 
-                # Création de l'instance caméra selon le type
                 camera_instance = self._create_camera_instance(camera_info)
                 
                 if not camera_instance:
                     logger.error(f"❌ Échec création instance {camera_info.camera_type}")
                     return False
                 
-                # Ouverture effective
                 if not self._open_camera_instance(camera_instance, camera_info):
                     logger.error(f"❌ Échec ouverture caméra {camera_info.name}")
                     return False
                 
-                # Enregistrement de la caméra active
                 self.active_cameras[alias] = {
                     'camera': camera_instance,
                     'info': camera_info,
                     'opened_at': time.time(),
                     'frame_count': 0,
                     'last_frame_time': 0.0,
-                    'is_streaming': False
+                    'is_streaming': True  # Marquer comme streaming dès l'ouverture
                 }
                 
                 logger.info(f"✅ Caméra {alias} ouverte avec succès")
@@ -196,7 +230,7 @@ class CameraManager:
                 if not REALSENSE_AVAILABLE:
                     raise Exception("RealSense non disponible")
                 
-                # CORRECTION: Passer la configuration à RealSenseCamera
+                # CORRECTION CRITIQUE: Passer la configuration
                 return RealSenseCamera(self.config)
             
             elif camera_info.camera_type == CameraType.USB3_CAMERA:
@@ -213,14 +247,12 @@ class CameraManager:
         """Ouvre l'instance de caméra avec la bonne configuration"""
         try:
             if camera_info.camera_type == CameraType.REALSENSE:
-                # Démarrer le streaming RealSense
                 success = camera_instance.start_streaming()
                 if success:
                     logger.info(f"✅ Streaming RealSense démarré pour {camera_info.name}")
                 return success
                 
             elif camera_info.camera_type == CameraType.USB3_CAMERA:
-                # Ouvrir caméra USB3
                 success = camera_instance.open_camera(camera_info.device_id)
                 if success:
                     logger.info(f"✅ Caméra USB3 ouverte: {camera_info.name}")
@@ -246,16 +278,13 @@ class CameraManager:
                 camera_instance = camera_data['camera']
                 camera_info = camera_data['info']
                 
-                # Fermeture selon le type
                 if camera_info.camera_type == CameraType.REALSENSE:
                     camera_instance.stop_streaming()
                 elif camera_info.camera_type == CameraType.USB3_CAMERA:
                     camera_instance.close_camera()
                 
-                # Suppression du cache
                 del self.active_cameras[alias]
                 
-                # Nettoyage du cache des frames
                 with self.cache_lock:
                     if alias in self.frame_cache:
                         del self.frame_cache[alias]
@@ -323,7 +352,6 @@ class CameraManager:
                 'last_frame_time': camera_data['last_frame_time']
             }
             
-            # Calcul FPS approximatif
             if camera_data['frame_count'] > 0 and uptime > 0:
                 stats['avg_fps'] = camera_data['frame_count'] / uptime
             else:
@@ -348,4 +376,8 @@ class CameraManager:
     
     def __del__(self):
         """Destructeur - ferme automatiquement toutes les caméras"""
-        self.close_all_cameras()
+        try:
+            self.stop_streaming()
+            self.close_all_cameras()
+        except:
+            pass  # Éviter les erreurs lors de la destruction
