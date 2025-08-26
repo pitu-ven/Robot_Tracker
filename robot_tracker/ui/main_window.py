@@ -1,10 +1,10 @@
 # ui/main_window.py
-# Version 1.4 - Correction import QLabel et gestion d'erreurs TargetTab
-# Modification: Ajout imports manquants et fallback pour erreurs de création onglets
+# Version 1.5 - Correction warning signaux inter-onglets
+# Modification: Amélioration de la méthode connect_signals avec gestion robuste
 
 from PyQt6.QtWidgets import (QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
                            QStatusBar, QMenuBar, QToolBar, QMessageBox, QApplication, 
-                           QDialog, QLabel)  # Import QLabel ajouté
+                           QDialog, QLabel)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QFont, QAction, QPalette, QColor
 import sys
@@ -102,34 +102,32 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
-        # Labels permanents
+        # Widgets de statut
         self.camera_status = QLabel("Caméra: Arrêtée")
         self.tracking_status = QLabel("Tracking: Inactif")
         
-        self.status_bar.addPermanentWidget(self.camera_status)
+        self.status_bar.addWidget(self.camera_status)
         self.status_bar.addPermanentWidget(self.tracking_status)
-        
-        self.status_bar.showMessage("Prêt", 3000)
     
     def create_tabs(self):
-        """Crée les onglets de l'application"""
+        """Crée tous les onglets"""
         try:
             # Onglet Caméra
-            self.tabs['camera'] = CameraTab(self.config, self.camera_manager)
-            self.central_widget.addTab(self.tabs['camera'], "📹 Caméra")
+            self.tabs['camera'] = CameraTab(self.camera_manager, self.config)
+            self.central_widget.addTab(self.tabs['camera'], "🎥 Caméra")
             logger.info("📑 Onglet 'Caméra' créé avec succès")
             
             # Onglet Trajectoire
             self.tabs['trajectory'] = TrajectoryTab(self.config)
-            self.central_widget.addTab(self.tabs['trajectory'], "📈 Trajectoire")
+            self.central_widget.addTab(self.tabs['trajectory'], "📍 Trajectoire")
             logger.info("📑 Onglet 'Trajectoire' créé avec succès")
             
-            # Onglet Cible (avec gestion d'erreur renforcée)
+            # Onglet Cible avec fallback
             self._create_target_tab_with_fallback()
             
             # Onglet Calibration
             self.tabs['calibration'] = CalibrationTab(self.config)
-            self.central_widget.addTab(self.tabs['calibration'], "🔧 Calibration")
+            self.central_widget.addTab(self.tabs['calibration'], "⚙️ Calibration")
             logger.info("📑 Onglet 'Calibration' créé avec succès")
             
             # Onglet Mesures
@@ -211,15 +209,63 @@ class MainWindow(QMainWindow):
         self.move(window.topLeft())
     
     def connect_signals(self):
-        """Connecte les signaux entre composants"""
-        # Connexions inter-onglets
-        if 'camera' in self.tabs and 'target' in self.tabs:
-            try:
-                # Signal démarrage caméra → onglet cible
-                self.tabs['camera'].camera_started.connect(
-                    lambda: logger.info("📡 Signal caméra → cible"))
-            except AttributeError:
-                logger.warning("⚠️ Signaux inter-onglets non connectés")
+        """Connecte les signaux entre composants avec vérification robuste"""
+        try:
+            # Vérification de l'existence des onglets
+            camera_tab = self.tabs.get('camera')
+            target_tab = self.tabs.get('target')
+            trajectory_tab = self.tabs.get('trajectory')
+            
+            connections_made = 0
+            
+            # Connexions caméra → autres onglets
+            if camera_tab:
+                # Signal de sélection de caméra
+                if hasattr(camera_tab, 'camera_selected'):
+                    if target_tab and hasattr(target_tab, '_on_camera_changed'):
+                        camera_tab.camera_selected.connect(target_tab._on_camera_changed)
+                        connections_made += 1
+                        logger.info("📡 Signal caméra → cible connecté")
+                
+                # Signal de démarrage streaming
+                if hasattr(camera_tab, 'streaming_started'):
+                    if target_tab and hasattr(target_tab, '_on_streaming_started'):
+                        camera_tab.streaming_started.connect(target_tab._on_streaming_started)
+                        connections_made += 1
+                        logger.info("📡 Signal streaming → cible connecté")
+            
+            # Connexions cible → trajectoire
+            if target_tab and trajectory_tab:
+                if hasattr(target_tab, 'target_detected') and hasattr(trajectory_tab, '_on_target_detected'):
+                    target_tab.target_detected.connect(trajectory_tab._on_target_detected)
+                    connections_made += 1
+                    logger.info("📡 Signal cible → trajectoire connecté")
+            
+            # Connexions pour mise à jour statut
+            for tab_name, tab_instance in self.tabs.items():
+                if hasattr(tab_instance, 'status_changed'):
+                    tab_instance.status_changed.connect(self._on_tab_status_changed)
+                    connections_made += 1
+            
+            if connections_made > 0:
+                logger.info(f"✅ {connections_made} connexion(s) de signaux établie(s)")
+            else:
+                logger.info("📡 Aucun signal inter-onglet à connecter (normal si onglets basiques)")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur connexion signaux: {e}")
+            # Ne pas lever d'exception, continuer le démarrage
+    
+    def _on_tab_status_changed(self, status_info):
+        """Callback pour les changements de statut des onglets"""
+        try:
+            # Mise à jour de la barre de statut selon les infos reçues
+            if isinstance(status_info, dict):
+                tab_name = status_info.get('tab', 'Unknown')
+                message = status_info.get('message', 'Status changed')
+                logger.debug(f"📊 Statut {tab_name}: {message}")
+        except Exception as e:
+            logger.debug(f"Erreur traitement statut: {e}")
     
     def update_status(self):
         """Met à jour la barre de statut"""

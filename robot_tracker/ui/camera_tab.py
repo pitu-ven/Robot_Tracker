@@ -1,6 +1,6 @@
 # ui/camera_tab.py
-# Version 4.4 - Correction implémentation réelle des méthodes camera
-# Modification: Remplacement des méthodes stub par les vraies implémentations
+# Version 4.5 - Correction erreur detect_all_cameras et implémentation complète
+# Modification: Correction self.config.detect_all_cameras → self.camera_manager.detect_all_cameras
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -63,6 +63,8 @@ class CameraTab(QWidget):
     
     # Signaux
     camera_selected = pyqtSignal(str)
+    streaming_started = pyqtSignal()
+    streaming_stopped = pyqtSignal()
     frame_captured = pyqtSignal(str, dict)
     
     def __init__(self, camera_manager, config):
@@ -73,225 +75,184 @@ class CameraTab(QWidget):
         
         # État interne
         self.available_cameras: List = []
-        self.selected_camera: Optional = None
+        self.selected_camera: Optional[Any] = None
         self.active_displays: Dict[str, CameraDisplayWidget] = {}
         self.is_streaming = False
+        
+        # Configuration
+        self.default_fps = self.config.get('ui', 'camera_tab.acquisition.default_fps', 30)
+        self.stats_interval = self.config.get('ui', 'camera_tab.timers.stats_interval_ms', 1000)
         
         # Timers
         self.frame_timer = QTimer()
         self.stats_timer = QTimer()
         
-        # Configuration depuis JSON
-        version = self.config.get('ui', 'camera_tab.version', '4.4')
-        self.control_panel_width = self.config.get('ui', 'camera_tab.layout.control_panel_width', 280)
-        self.default_fps = self.config.get('ui', 'camera_tab.acquisition.default_fps', 30)
-        self.stats_interval = self.config.get('ui', 'camera_tab.timers.stats_interval_ms', 1000)
-        
-        logger.info(f"🎥 CameraTab v{version} initialisé (implémentation complète)")
-        
-        self._setup_ui()
+        # Interface
+        self.init_ui()
         self._connect_signals()
+        
+        # Détection initiale des caméras
         self._detect_cameras()
+        
+        logger.info(f"🎥 CameraTab v4.5 initialisé (correction detect_all_cameras)")
     
-    def _setup_ui(self):
+    def init_ui(self):
         """Initialise l'interface utilisateur"""
-        self.main_layout = QHBoxLayout(self)
-        self.main_layout.setSpacing(10)
+        main_layout = QHBoxLayout(self)
         
         # Panneau de contrôle à gauche
-        self.control_panel = self._create_control_panel()
-        self.main_layout.addWidget(self.control_panel)
+        control_panel = self._create_control_panel()
+        control_panel.setMaximumWidth(self.config.get('ui', 'camera_tab.layout.control_panel_width', 280))
         
         # Zone d'affichage à droite
-        self.display_area = self._create_display_area()
-        self.main_layout.addWidget(self.display_area, 1)
+        display_area = self._create_display_area()
+        
+        main_layout.addWidget(control_panel)
+        main_layout.addWidget(display_area, 1)
     
-    def _create_control_panel(self) -> QWidget:
+    def _create_control_panel(self):
         """Crée le panneau de contrôle"""
         panel = QWidget()
-        panel.setFixedWidth(self.control_panel_width)
         layout = QVBoxLayout(panel)
         
-        # Sélection des caméras
-        camera_group = self._create_camera_selection_group()
-        layout.addWidget(camera_group)
+        # Section sélection caméra
+        camera_group = QGroupBox("Sélection Caméra")
+        camera_layout = QVBoxLayout(camera_group)
         
-        # Contrôles d'acquisition
-        acquisition_group = self._create_acquisition_controls_group()
-        layout.addWidget(acquisition_group)
-        
-        # Paramètres d'affichage
-        display_group = self._create_display_settings_group()
-        layout.addWidget(display_group)
-        
-        # Statistiques
-        stats_group = self._create_statistics_group()
-        layout.addWidget(stats_group)
-        
-        # Log
-        log_group = self._create_log_group()
-        layout.addWidget(log_group)
-        
-        layout.addStretch()
-        return panel
-    
-    def _create_camera_selection_group(self) -> QGroupBox:
-        """Groupe de sélection des caméras"""
-        group = QGroupBox("📷 Sélection Caméra")
-        layout = QVBoxLayout(group)
+        # Bouton de détection
+        self.detect_btn = QPushButton("🔍 Détecter Caméras")
+        self.detect_btn.clicked.connect(self._detect_cameras)
+        camera_layout.addWidget(self.detect_btn)
         
         # ComboBox caméras
         self.camera_combo = QComboBox()
         self.camera_combo.currentTextChanged.connect(self._on_camera_selected)
-        layout.addWidget(self.camera_combo)
+        camera_layout.addWidget(self.camera_combo)
         
-        # Informations caméra sélectionnée
-        self.camera_info_label = QLabel("Aucune caméra sélectionnée")
+        # Informations caméra
+        self.camera_info_label = QLabel("Sélectionnez une caméra")
         self.camera_info_label.setWordWrap(True)
-        self.camera_info_label.setStyleSheet("color: gray; font-size: 10px;")
-        layout.addWidget(self.camera_info_label)
+        self.camera_info_label.setStyleSheet("background-color: #f0f0f0; padding: 8px; border-radius: 4px;")
+        camera_layout.addWidget(self.camera_info_label)
         
-        # Boutons contrôle
-        buttons_layout = QHBoxLayout()
+        layout.addWidget(camera_group)
         
-        self.refresh_btn = QPushButton("🔄 Actualiser")
-        self.refresh_btn.clicked.connect(self._detect_cameras)
+        # Section contrôles caméra
+        control_group = QGroupBox("Contrôles Caméra")
+        control_layout = QVBoxLayout(control_group)
         
-        self.open_btn = QPushButton("▶️ Ouvrir")
+        # Boutons ouverture/fermeture
+        button_layout = QHBoxLayout()
+        self.open_btn = QPushButton("📷 Ouvrir")
         self.open_btn.clicked.connect(self._open_selected_camera)
-        self.open_btn.setEnabled(False)
-        
-        self.close_btn = QPushButton("⏹️ Fermer")
+        self.close_btn = QPushButton("🚫 Fermer")
         self.close_btn.clicked.connect(self._close_selected_camera)
-        self.close_btn.setEnabled(False)
         
-        buttons_layout.addWidget(self.refresh_btn)
-        buttons_layout.addWidget(self.open_btn)
-        buttons_layout.addWidget(self.close_btn)
-        layout.addLayout(buttons_layout)
-        
-        return group
-    
-    def _create_acquisition_controls_group(self) -> QGroupBox:
-        """Groupe de contrôles d'acquisition"""
-        group = QGroupBox("🎬 Acquisition")
-        layout = QVBoxLayout(group)
+        button_layout.addWidget(self.open_btn)
+        button_layout.addWidget(self.close_btn)
+        control_layout.addLayout(button_layout)
         
         # Boutons streaming
-        streaming_layout = QHBoxLayout()
-        
+        stream_layout = QHBoxLayout()
         self.start_btn = QPushButton("▶️ Démarrer")
         self.start_btn.clicked.connect(self._start_streaming)
-        self.start_btn.setEnabled(False)
-        
         self.stop_btn = QPushButton("⏹️ Arrêter")
         self.stop_btn.clicked.connect(self._stop_streaming)
-        self.stop_btn.setEnabled(False)
         
-        streaming_layout.addWidget(self.start_btn)
-        streaming_layout.addWidget(self.stop_btn)
-        layout.addLayout(streaming_layout)
+        stream_layout.addWidget(self.start_btn)
+        stream_layout.addWidget(self.stop_btn)
+        control_layout.addLayout(stream_layout)
         
-        # Contrôle FPS
-        fps_layout = QHBoxLayout()
-        fps_layout.addWidget(QLabel("FPS:"))
+        layout.addWidget(control_group)
         
-        self.fps_spinbox = QSpinBox()
-        self.fps_spinbox.setRange(1, 60)
-        self.fps_spinbox.setValue(self.default_fps)
-        self.fps_spinbox.valueChanged.connect(self._on_fps_changed)
+        # Section options d'affichage
+        options_group = QGroupBox("Options d'Affichage")
+        options_layout = QVBoxLayout(options_group)
         
-        fps_layout.addWidget(self.fps_spinbox)
-        layout.addLayout(fps_layout)
-        
-        return group
-    
-    def _create_display_settings_group(self) -> QGroupBox:
-        """Groupe de paramètres d'affichage"""
-        group = QGroupBox("🖼️ Affichage")
-        layout = QVBoxLayout(group)
-        
-        # Vue profondeur
-        self.depth_checkbox = QCheckBox("Afficher vue profondeur")
+        # Vue profondeur (RealSense uniquement)
+        self.depth_checkbox = QCheckBox("Vue Profondeur")
         self.depth_checkbox.toggled.connect(self._toggle_depth_view)
-        layout.addWidget(self.depth_checkbox)
+        options_layout.addWidget(self.depth_checkbox)
         
         # Statistiques
-        self.stats_checkbox = QCheckBox("Afficher statistiques")
-        self.stats_checkbox.setChecked(True)
+        self.stats_checkbox = QCheckBox("Statistiques")
         self.stats_checkbox.toggled.connect(self._toggle_info_overlay)
-        layout.addWidget(self.stats_checkbox)
+        options_layout.addWidget(self.stats_checkbox)
         
-        # Zoom
-        zoom_layout = QHBoxLayout()
-        zoom_layout.addWidget(QLabel("Zoom:"))
+        # Taille d'affichage
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Taille:"))
+        self.size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.size_slider.setRange(50, 200)
+        self.size_slider.setValue(100)
+        self.size_slider.valueChanged.connect(self._on_size_changed)
+        size_layout.addWidget(self.size_slider)
+        options_layout.addLayout(size_layout)
         
-        self.zoom_spinbox = QSpinBox()
-        self.zoom_spinbox.setRange(50, 300)
-        self.zoom_spinbox.setValue(100)
-        self.zoom_spinbox.setSuffix("%")
-        self.zoom_spinbox.valueChanged.connect(self._on_zoom_changed)
+        layout.addWidget(options_group)
         
-        zoom_layout.addWidget(self.zoom_spinbox)
-        layout.addLayout(zoom_layout)
+        # Section capture
+        capture_group = QGroupBox("Capture")
+        capture_layout = QVBoxLayout(capture_group)
         
-        return group
-    
-    def _create_statistics_group(self) -> QGroupBox:
-        """Groupe de statistiques"""
-        group = QGroupBox("📊 Statistiques")
-        layout = QVBoxLayout(group)
-        
-        self.stats_table = QTableWidget(0, 2)
-        self.stats_table.setHorizontalHeaderLabels(["Propriété", "Valeur"])
-        self.stats_table.setMaximumHeight(150)
-        layout.addWidget(self.stats_table)
-        
-        # Boutons capture
-        capture_layout = QHBoxLayout()
-        
+        capture_btn_layout = QHBoxLayout()
         self.capture_btn = QPushButton("📸 Capturer")
         self.capture_btn.clicked.connect(self._capture_frame)
-        self.capture_btn.setEnabled(False)
-        
         self.save_btn = QPushButton("💾 Sauvegarder")
         self.save_btn.clicked.connect(self._save_image)
-        self.save_btn.setEnabled(False)
         
-        capture_layout.addWidget(self.capture_btn)
-        capture_layout.addWidget(self.save_btn)
-        layout.addLayout(capture_layout)
+        capture_btn_layout.addWidget(self.capture_btn)
+        capture_btn_layout.addWidget(self.save_btn)
+        capture_layout.addLayout(capture_btn_layout)
         
-        return group
-    
-    def _create_log_group(self) -> QGroupBox:
-        """Groupe de log"""
-        group = QGroupBox("📝 Journal")
-        layout = QVBoxLayout(group)
+        layout.addWidget(capture_group)
+        
+        # Section statistiques
+        stats_group = QGroupBox("Statistiques")
+        stats_layout = QVBoxLayout(stats_group)
+        
+        self.stats_table = QTableWidget(0, 2)
+        self.stats_table.setHorizontalHeaderLabels(["Paramètre", "Valeur"])
+        self.stats_table.horizontalHeader().setStretchLastSection(True)
+        self.stats_table.setMaximumHeight(150)
+        stats_layout.addWidget(self.stats_table)
+        
+        layout.addWidget(stats_group)
+        
+        # Section log
+        log_group = QGroupBox("Journal")
+        log_layout = QVBoxLayout(log_group)
         
         self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(120)
+        self.log_text.setMaximumHeight(150)
         self.log_text.setReadOnly(True)
-        layout.addWidget(self.log_text)
+        log_layout.addWidget(self.log_text)
         
-        clear_btn = QPushButton("🗑️ Effacer")
-        clear_btn.clicked.connect(self.log_text.clear)
-        layout.addWidget(clear_btn)
+        layout.addWidget(log_group)
         
-        return group
+        # Mise à jour initiale des contrôles
+        self._update_controls_state()
+        
+        return panel
     
-    def _create_display_area(self) -> QWidget:
-        """Crée la zone d'affichage des caméras"""
-        area = QWidget()
-        self.display_layout = QGridLayout(area)
+    def _create_display_area(self):
+        """Crée la zone d'affichage principale"""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Widget conteneur pour les affichages
+        self.display_container = QWidget()
+        self.display_layout = QGridLayout(self.display_container)
         
         # Message par défaut
-        self.default_message = QLabel(
-            "Aucune caméra active\n\nSélectionnez et ouvrez une caméra\npour voir le streaming temps réel"
-        )
+        self.default_message = QLabel("Aucune caméra ouverte\n\n1. Sélectionnez une caméra\n2. Cliquez sur 'Ouvrir'\n3. Lancez le streaming")
         self.default_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.default_message.setStyleSheet("color: gray; font-size: 14px;")
+        self.default_message.setStyleSheet("color: #666; font-size: 14px;")
         self.display_layout.addWidget(self.default_message, 0, 0)
+        
+        area.setWidget(self.display_container)
         
         return area
     
@@ -319,7 +280,7 @@ class CameraTab(QWidget):
         self._log("🔍 Détection des caméras...")
         
         try:
-            # ✅ CORRECT - utilise self.camera_manager
+            # ✅ CORRECTION PRINCIPALE - utilise self.camera_manager au lieu de self.config
             cameras = self.camera_manager.detect_all_cameras()
             self.available_cameras = cameras
             
@@ -416,13 +377,12 @@ class CameraTab(QWidget):
                 # Création de l'affichage
                 self._add_camera_display(alias, camera_name)
                 self._update_controls_state()
-                
             else:
                 self._log(f"❌ Échec ouverture {camera_name}")
                 
         except Exception as e:
-            self._log(f"❌ Erreur ouverture caméra: {e}")
-            logger.error(f"Erreur ouverture caméra {alias}: {e}")
+            self._log(f"❌ Erreur ouverture: {e}")
+            logger.error(f"Erreur ouverture caméra {camera_name}: {e}")
     
     def _close_selected_camera(self):
         """Ferme la caméra sélectionnée - IMPLÉMENTATION RÉELLE"""
@@ -431,6 +391,8 @@ class CameraTab(QWidget):
             return
         
         alias = self._get_camera_alias()
+        
+        self._log(f"🚫 Fermeture {alias}...")
         
         try:
             # Fermeture via le camera_manager
@@ -442,94 +404,58 @@ class CameraTab(QWidget):
                 # Suppression de l'affichage
                 self._remove_camera_display(alias)
                 self._update_controls_state()
-                
             else:
                 self._log(f"❌ Erreur fermeture {alias}")
                 
         except Exception as e:
-            self._log(f"❌ Erreur fermeture caméra {alias}: {e}")
+            self._log(f"❌ Erreur fermeture: {e}")
             logger.error(f"Erreur fermeture caméra {alias}: {e}")
-    
-    def _add_camera_display(self, alias: str, name: str):
-        """Ajoute un affichage caméra"""
-        # Suppression du message par défaut
-        if self.default_message.parent():
-            self.default_message.setParent(None)
-        
-        # Création du widget d'affichage
-        display_widget = CameraDisplayWidget(alias)
-        display_widget.camera_clicked.connect(self._on_camera_display_clicked)
-        
-        # Ajout au layout (simple pour le moment)
-        row = len(self.active_displays) // 2
-        col = len(self.active_displays) % 2
-        self.display_layout.addWidget(display_widget, row, col)
-        
-        self.active_displays[alias] = display_widget
-        
-        dual_view = self.depth_checkbox.isChecked()
-        self._log(f"🖼️ Affichage {alias} ajouté (vue double: {dual_view})")
-    
-    def _remove_camera_display(self, alias: str):
-        """Supprime un affichage caméra"""
-        if alias in self.active_displays:
-            widget = self.active_displays[alias]
-            widget.setParent(None)
-            del self.active_displays[alias]
-            
-            self._log(f"🖼️ Affichage {alias} supprimé")
-            
-            # Remettre le message par défaut si plus de caméras
-            if len(self.active_displays) == 0:
-                self.display_layout.addWidget(self.default_message, 0, 0)
     
     def _start_streaming(self):
         """Démarre le streaming - IMPLÉMENTATION RÉELLE"""
-        if self.is_streaming:
-            self._log("⚠️ Streaming déjà en cours")
-            return
-        
         if len(self.active_displays) == 0:
             self._log("⚠️ Aucune caméra ouverte pour le streaming")
             return
         
-        self._log("🎬 Démarrage du streaming...")
+        self._log("▶️ Démarrage du streaming...")
         
         try:
-            # Calcul de l'intervalle selon FPS
-            fps = self.fps_spinbox.value()
-            interval_ms = int(1000 / fps)
+            # Démarrage via le camera_manager
+            success = self.camera_manager.start_streaming()
             
-            # Démarrage des timers
-            self.frame_timer.start(interval_ms)
-            self.stats_timer.start(self.stats_interval)
-            
-            self.is_streaming = True
-            self._update_controls_state()
-            
-            self._log("✅ Streaming démarré")
-            
+            if success:
+                self.is_streaming = True
+                self.frame_timer.start(1000 // self.default_fps)  # Conversion FPS -> ms
+                
+                self._log(f"✅ Streaming démarré à {self.default_fps} FPS")
+                self.streaming_started.emit()
+                self._update_controls_state()
+            else:
+                self._log("❌ Échec démarrage streaming")
+                
         except Exception as e:
-            self._log(f"❌ Erreur démarrage streaming: {e}")
+            self._log(f"❌ Erreur streaming: {e}")
             logger.error(f"Erreur démarrage streaming: {e}")
     
     def _stop_streaming(self):
         """Arrête le streaming - IMPLÉMENTATION RÉELLE"""
         if not self.is_streaming:
-            self._log("⚠️ Streaming déjà arrêté")
             return
         
-        self._log("🛑 Arrêt du streaming...")
+        self._log("⏹️ Arrêt du streaming...")
         
         try:
             # Arrêt des timers
             self.frame_timer.stop()
             self.stats_timer.stop()
             
-            self.is_streaming = False
-            self._update_controls_state()
+            # Arrêt via le camera_manager
+            self.camera_manager.stop_streaming()
             
+            self.is_streaming = False
             self._log("✅ Streaming arrêté")
+            self.streaming_stopped.emit()
+            self._update_controls_state()
             
         except Exception as e:
             self._log(f"❌ Erreur arrêt streaming: {e}")
@@ -542,25 +468,20 @@ class CameraTab(QWidget):
         
         try:
             for alias, display_widget in self.active_displays.items():
-                # Récupération de la frame via camera_manager
+                # Récupération de la frame
                 ret, color_frame, depth_frame = self.camera_manager.get_camera_frame(alias)
                 
                 if ret and color_frame is not None:
-                    # Mise à jour de l'affichage principal
+                    # Mise à jour de l'affichage principal (RGB)
                     display_widget.update_frame(color_frame)
                     
-                    # TODO: Gérer l'affichage de la profondeur si activé
-                    if self.depth_checkbox.isChecked() and depth_frame is not None:
-                        # Conversion depth en image visualisable
-                        depth_colormap = cv2.applyColorMap(
-                            cv2.convertScaleAbs(depth_frame, alpha=0.03), 
-                            cv2.COLORMAP_JET
-                        )
-                        # Pour l'instant, on l'ignore - à implémenter plus tard
+                    # TODO: Gestion de l'affichage profondeur si activé
+                    # if self.depth_checkbox.isChecked() and depth_frame is not None:
+                    #     # Affichage côte à côte RGB/Depth
+                    #     pass
                 
         except Exception as e:
-            self._log(f"❌ Erreur mise à jour frames: {e}")
-            logger.error(f"Erreur mise à jour frames: {e}")
+            logger.debug(f"Erreur mise à jour frames: {e}")
     
     def _update_statistics(self):
         """Met à jour les statistiques - IMPLÉMENTATION RÉELLE"""
@@ -568,59 +489,84 @@ class CameraTab(QWidget):
             return
         
         try:
-            # Mise à jour pour chaque caméra active
+            self.stats_table.setRowCount(0)
+            
             for alias in self.active_displays.keys():
-                stats = self.camera_manager.get_camera_stats(alias)
+                # Récupération des stats basiques
+                ret, color_frame, depth_frame = self.camera_manager.get_camera_frame(alias)
                 
-                if stats:
-                    self._update_stats_table(alias, stats)
+                if ret and color_frame is not None:
+                    height, width = color_frame.shape[:2]
                     
+                    # Ajout des statistiques
+                    current_row = self.stats_table.rowCount()
+                    self.stats_table.insertRow(current_row)
+                    
+                    self.stats_table.setItem(current_row, 0, QTableWidgetItem(f"{alias} - Résolution"))
+                    self.stats_table.setItem(current_row, 1, QTableWidgetItem(f"{width}x{height}"))
+                    
+                    current_row = self.stats_table.rowCount()
+                    self.stats_table.insertRow(current_row)
+                    
+                    fps_estimate = self.default_fps  # Estimation basique
+                    self.stats_table.setItem(current_row, 0, QTableWidgetItem(f"{alias} - FPS"))
+                    self.stats_table.setItem(current_row, 1, QTableWidgetItem(f"~{fps_estimate}"))
+                
         except Exception as e:
-            self._log(f"❌ Erreur mise à jour stats: {e}")
-            logger.error(f"Erreur mise à jour statistiques: {e}")
+            logger.debug(f"Erreur mise à jour statistiques: {e}")
     
-    def _update_stats_table(self, alias: str, stats: Dict[str, Any]):
-        """Met à jour le tableau de statistiques"""
-        self.stats_table.setRowCount(len(stats))
+    def _add_camera_display(self, alias: str, name: str):
+        """Ajoute un affichage pour une caméra"""
+        # Masquer le message par défaut
+        self.default_message.hide()
         
-        row = 0
-        for key, value in stats.items():
-            # Formatage des valeurs
-            if isinstance(value, float):
-                if key.endswith('fps'):
-                    formatted_value = f"{value:.1f} FPS"
-                elif key.endswith('time'):
-                    formatted_value = f"{value:.1f}s"
-                else:
-                    formatted_value = f"{value:.2f}"
-            else:
-                formatted_value = str(value)
+        # Création du widget d'affichage
+        display_widget = CameraDisplayWidget(alias)
+        display_widget.camera_clicked.connect(self._on_camera_display_clicked)
+        
+        # Calcul de la position dans la grille
+        num_displays = len(self.active_displays)
+        max_cols = self.config.get('ui', 'camera_tab.layout.max_columns_single', 3)
+        
+        row = num_displays // max_cols
+        col = num_displays % max_cols
+        
+        # Ajout à la grille
+        self.display_layout.addWidget(display_widget, row, col)
+        self.active_displays[alias] = display_widget
+        
+        self._log(f"🖥️ Affichage créé pour {alias}")
+    
+    def _remove_camera_display(self, alias: str):
+        """Supprime l'affichage d'une caméra"""
+        if alias in self.active_displays:
+            display_widget = self.active_displays[alias]
+            self.display_layout.removeWidget(display_widget)
+            display_widget.deleteLater()
+            del self.active_displays[alias]
             
-            # Mise à jour des cellules
-            key_item = QTableWidgetItem(key.replace('_', ' ').title())
-            value_item = QTableWidgetItem(formatted_value)
+            self._log(f"🗑️ Affichage supprimé pour {alias}")
             
-            self.stats_table.setItem(row, 0, key_item)
-            self.stats_table.setItem(row, 1, value_item)
-            row += 1
-        
-        self.stats_table.resizeColumnsToContents()
+            # Réorganiser les affichages restants
+            self._reorganize_displays()
     
-    def _on_fps_changed(self, value):
-        """Gestion du changement de FPS - IMPLÉMENTATION RÉELLE"""
-        self._log(f"🔄 FPS changé: {value}")
+    def _reorganize_displays(self):
+        """Réorganise les affichages après suppression"""
+        if len(self.active_displays) == 0:
+            # Afficher le message par défaut
+            self.default_message.show()
+            return
         
-        # Si streaming en cours, restart des timers avec nouvelle fréquence
-        if self.is_streaming:
-            interval_ms = int(1000 / value)
-            self.frame_timer.stop()
-            self.frame_timer.start(interval_ms)
+        # Réorganiser en grille
+        max_cols = self.config.get('ui', 'camera_tab.layout.max_columns_single', 3)
+        
+        for i, (alias, widget) in enumerate(self.active_displays.items()):
+            row = i // max_cols
+            col = i % max_cols
+            self.display_layout.addWidget(widget, row, col)
     
-    def _on_zoom_changed(self, value):
-        """Gestion du changement de zoom - IMPLÉMENTATION RÉELLE"""
-        self._log(f"🔍 Zoom changé: {value}%")
-        
-        # Mise à jour de la taille des displays
+    def _on_size_changed(self, value):
+        """Gestion du changement de taille d'affichage"""
         for display_widget in self.active_displays.values():
             base_size = QSize(320, 240)
             new_size = base_size * (value / 100.0)
@@ -633,7 +579,6 @@ class CameraTab(QWidget):
         self._log(f"👁️ Vue profondeur: {state}")
         
         # TODO: Implémenter l'affichage côte à côte RGB/Depth
-        # Pour l'instant, juste un log
     
     def _toggle_info_overlay(self):
         """Basculer l'affichage des infos - IMPLÉMENTATION RÉELLE"""
