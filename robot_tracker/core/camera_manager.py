@@ -1,6 +1,6 @@
 # core/camera_manager.py
-# Version 4.2 - Correction import circulaire et MeasuresTab manquant
-# Modification: Suppression import circulaire ligne 17 et ajout import MeasuresTab
+# Version 4.5 - Correction d'indentation et ajout méthodes manquantes
+# Modification: Résolution erreur syntaxe + ajout detect_all_cameras et stop_streaming
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -17,9 +17,6 @@ except ImportError:
     rs = None
     logging.warning("⚠️ pyrealsense2 non disponible - Mode simulation")
 
-# CORRECTION: Suppression de l'import circulaire à la ligne 17
-# from core.camera_manager import CameraManager  # ❌ SUPPRIMÉ
-
 from hardware.realsense_driver import RealSenseCamera
 from hardware.usb3_camera_driver import USB3CameraDriver
 
@@ -34,8 +31,8 @@ class CameraManager:
         self.camera_instances = {}
         self.camera_threads = {}
         self.lock = threading.RLock()
-        
         self._is_streaming = False
+        
         # Configuration
         self.target_fps = self.config.get('camera', 'manager.target_fps', 30)
         self.detection_timeout = self.config.get('camera', 'manager.detection_timeout_ms', 3000) / 1000
@@ -87,10 +84,10 @@ class CameraManager:
         
         self.cameras = detected
         return detected
+    
     def detect_all_cameras(self):
         """Alias pour detect_cameras() - Méthode attendue par camera_tab.py"""
         return self.detect_cameras()
-
     
     def open_camera(self, camera_id: str, alias: Optional[str] = None):
         """Ouvre une caméra par ID ou alias"""
@@ -161,45 +158,18 @@ class CameraManager:
                 logger.error(error_msg.format(error=str(e)))
                 return False
     
-    def is_camera_open(self, alias: str) -> bool:
-        """Vérifie si une caméra est ouverte"""
-        with self.lock:
-            return alias in self.camera_instances
-    
-    def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-        """Récupère une frame d'une caméra"""
-        with self.lock:
-            if alias not in self.camera_instances:
-                return False, None, None
-            
-            try:
-                camera_instance = self.camera_instances[alias]
-                return camera_instance.get_frame()
-            except Exception as e:
-                error_msg = self.config.get('core', 'camera_manager.messages.frame_error', 
-                                          'Failed to get frame: {error}')
-                logger.error(error_msg.format(error=str(e)))
-                return False, None, None
-    
-    def get_camera_info(self, alias: str) -> Optional[Dict]:
-        """Récupère les informations d'une caméra"""
-        with self.lock:
-            for camera_info in self.cameras.values():
-                if camera_info.get('alias') == alias:
-                    return camera_info
-            return False, None, None
-    
-    def list_open_cameras(self) -> List[str]:
-        """Liste des caméras ouvertes"""
-        with self.lock:
-            return list(self.camera_instances.keys())
-    
     def close_all_cameras(self):
         """Ferme toutes les caméras"""
         with self.lock:
             aliases = list(self.camera_instances.keys())
             for alias in aliases:
                 self.close_camera(alias)
+    
+    def is_camera_open(self, alias: str) -> bool:
+        """Vérifie si une caméra est ouverte"""
+        with self.lock:
+            return alias in self.camera_instances
+    
     def start_streaming(self) -> bool:
         """Démarre le streaming pour toutes les caméras ouvertes"""
         with self.lock:
@@ -212,14 +182,24 @@ class CameraManager:
                 return False
             
             try:
+                # Démarrage du streaming pour chaque caméra
                 for alias, camera_instance in self.camera_instances.items():
                     if hasattr(camera_instance, 'start_streaming'):
                         camera_instance.start_streaming()
                         logger.info(f"✅ Streaming démarré pour {alias}")
                 
                 self._is_streaming = True
-                logger.info("✅ Streaming global démarré")
+                success_msg = self.config.get('core', 'camera_manager.messages.streaming_started', 
+                                            '✅ Streaming global démarré')
+                logger.info(success_msg)
                 return True
+                
+            except Exception as e:
+                error_msg = self.config.get('core', 'camera_manager.messages.streaming_start_error', 
+                                          'Erreur démarrage streaming: {error}')
+                logger.error(error_msg.format(error=str(e)))
+                return False
+    
     def stop_streaming(self):
         """Arrête le streaming pour toutes les caméras - Méthode attendue par main_window.py"""
         with self.lock:
@@ -228,19 +208,86 @@ class CameraManager:
                 return
             
             try:
+                # Arrêt du streaming pour chaque caméra
                 for alias, camera_instance in self.camera_instances.items():
                     if hasattr(camera_instance, 'stop_streaming'):
                         camera_instance.stop_streaming()
                         logger.info(f"✅ Streaming arrêté pour {alias}")
                 
                 self._is_streaming = False
-                logger.info("✅ Streaming global arrêté")
+                success_msg = self.config.get('core', 'camera_manager.messages.streaming_stopped', 
+                                            '✅ Streaming global arrêté')
+                logger.info(success_msg)
                 
             except Exception as e:
-                logger.error(f"Erreur arrêt streaming: {e}")
-
+                error_msg = self.config.get('core', 'camera_manager.messages.streaming_stop_error', 
+                                          'Erreur arrêt streaming: {error}')
+                logger.error(error_msg.format(error=str(e)))
+    
+    def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
+        """Récupère une frame d'une caméra - Format compatible camera_tab.py"""
+        with self.lock:
+            if alias not in self.camera_instances:
+                return False, None, None
+            
+            try:
+                camera_instance = self.camera_instances[alias]
+                frame_data = camera_instance.get_frame()
+                
+                if frame_data and 'color' in frame_data:
+                    color_frame = frame_data['color']
+                    depth_frame = frame_data.get('depth', None)
+                    return True, color_frame, depth_frame
+                else:
+                    return False, None, None
+                    
+            except Exception as e:
+                error_msg = self.config.get('core', 'camera_manager.messages.frame_error', 
+                                          'Failed to get frame: {error}')
+                logger.error(error_msg.format(error=str(e)))
+                return False, None, None
+    
     @property
     def active_cameras(self) -> List[str]:
         """Liste des caméras actives - Propriété attendue par main_window.py"""
         with self.lock:
             return list(self.camera_instances.keys())
+    
+    @property
+    def is_streaming(self) -> bool:
+        """État du streaming"""
+        return self._is_streaming
+    
+    def get_camera_info(self, alias: str) -> Optional[Dict]:
+        """Récupère les informations d'une caméra"""
+        with self.lock:
+            for camera_info in self.cameras.values():
+                if camera_info.get('alias') == alias:
+                    return camera_info
+            return None
+    
+    def list_open_cameras(self) -> List[str]:
+        """Liste des caméras ouvertes"""
+        with self.lock:
+            return list(self.camera_instances.keys())
+    
+    def _get_camera_info(self, camera_id: str) -> Optional[Dict]:
+        """Récupère les infos d'une caméra par ID"""
+        for serial, info in self.cameras.items():
+            if serial == camera_id or info.get('alias') == camera_id:
+                return info
+        return None
+    
+    def _create_camera_instance(self, camera_info: Dict):
+        """Crée une instance de caméra selon le type"""
+        camera_type = camera_info.get('type')
+        
+        if camera_type == 'realsense':
+            return RealSenseCamera(camera_info, self.config)
+        elif camera_type == 'usb3':
+            return USB3CameraDriver(camera_info, self.config)
+        else:
+            error_msg = self.config.get('core', 'camera_manager.messages.unknown_type', 
+                                      'Unknown camera type: {type}')
+            logger.error(error_msg.format(type=camera_type))
+            return None

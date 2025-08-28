@@ -287,11 +287,26 @@ class CameraTab(QWidget):
             # Mise à jour de la ComboBox
             self.camera_combo.clear()
             for camera in cameras:
-                if hasattr(camera, 'camera_type') and hasattr(camera, 'name'):
+                if isinstance(camera, dict):
+                    # CameraManager retourne des dictionnaires
+                    camera_type = camera.get('type', 'unknown')
+                    name = camera.get('name', 'Unknown Device')
+                    serial = camera.get('serial', 'unknown')
+                    
+                    # Affichage lisible : Nom (type - serial court)
+                    if len(serial) > 8:
+                        serial_short = serial[-8:]  # 8 derniers caractères
+                    else:
+                        serial_short = serial
+                        
+                    display_name = f"{name} ({camera_type} - {serial_short})"
+                    self.camera_combo.addItem(display_name, camera)
+                elif hasattr(camera, 'camera_type') and hasattr(camera, 'name'):
                     display_name = f"{camera.camera_type.value}: {camera.name}"
                     self.camera_combo.addItem(display_name, camera)
                 else:
-                    display_name = f"Caméra: {getattr(camera, 'name', 'Unknown')}"
+                    name = getattr(camera, 'name', str(camera))
+                    display_name = f"Caméra: {name}"
                     self.camera_combo.addItem(display_name, camera)
             
             self._log(f"✅ {len(cameras)} caméra(s) détectée(s)")
@@ -305,18 +320,35 @@ class CameraTab(QWidget):
         """Gestion de la sélection d'une caméra"""
         camera_data = self.camera_combo.currentData()
         
-        if camera_data and hasattr(camera_data, 'camera_type'):
+        if camera_data:
             self.selected_camera = camera_data
             self._update_controls_state()
             
-            # Mise à jour des informations
-            info_text = f"Type: {camera_data.camera_type.value}\n"
-            info_text += f"Nom: {camera_data.name}\n"
-            info_text += f"ID: {camera_data.device_id}"
-            self.camera_info_label.setText(info_text)
-            
-            self._log(f"📷 Caméra sélectionnée: {camera_data.name}")
-            self.camera_selected.emit(camera_data.name)
+            if isinstance(camera_data, dict):
+                # Nouveau format dictionnaire
+                camera_type = camera_data.get('type', 'unknown')
+                name = camera_data.get('name', 'Unknown Device')
+                serial = camera_data.get('serial', 'unknown')
+                device_index = camera_data.get('device_index', 'N/A')
+                
+                info_text = f"Type: {camera_type}\n"
+                info_text += f"Nom: {name}\n"
+                info_text += f"Serial: {serial}\n"
+                info_text += f"Index: {device_index}"
+                self.camera_info_label.setText(info_text)
+                
+                self._log(f"📷 Caméra sélectionnée: {name}")
+                self.camera_selected.emit(name)
+                
+            elif hasattr(camera_data, 'camera_type'):
+                # Ancien format objet (au cas où)
+                info_text = f"Type: {camera_data.camera_type.value}\n"
+                info_text += f"Nom: {camera_data.name}\n"
+                info_text += f"ID: {camera_data.device_id}"
+                self.camera_info_label.setText(info_text)
+                
+                self._log(f"📷 Caméra sélectionnée: {camera_data.name}")
+                self.camera_selected.emit(camera_data.name)
         else:
             self.selected_camera = None
             self.camera_info_label.setText("Sélectionnez une caméra")
@@ -352,8 +384,13 @@ class CameraTab(QWidget):
     
     def _get_camera_alias(self) -> str:
         """Génère l'alias pour la caméra courante"""
-        if self.selected_camera and hasattr(self.selected_camera, 'camera_type'):
-            return f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
+        if self.selected_camera:
+            if isinstance(self.selected_camera, dict):
+                camera_type = self.selected_camera.get('type', 'unknown')
+                device_index = self.selected_camera.get('device_index', 0)
+                return f"{camera_type}_{device_index}"
+            elif hasattr(self.selected_camera, 'camera_type'):
+                return f"{self.selected_camera.camera_type.value}_{self.selected_camera.device_id}"
         return ""
     
     def _open_selected_camera(self):
