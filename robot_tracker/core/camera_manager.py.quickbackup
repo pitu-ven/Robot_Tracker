@@ -7,7 +7,7 @@
 
 import logging
 import threading
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import Dict, List, Optional, Any, Union
 import time
 import numpy as np
 
@@ -35,7 +35,6 @@ class CameraManager:
         self.camera_threads = {}
         self.lock = threading.RLock()
         
-        self._is_streaming = False
         # Configuration
         self.target_fps = self.config.get('camera', 'manager.target_fps', 30)
         self.detection_timeout = self.config.get('camera', 'manager.detection_timeout_ms', 3000) / 1000
@@ -87,10 +86,6 @@ class CameraManager:
         
         self.cameras = detected
         return detected
-    def detect_all_cameras(self):
-        """Alias pour detect_cameras() - Méthode attendue par camera_tab.py"""
-        return self.detect_cameras()
-
     
     def open_camera(self, camera_id: str, alias: Optional[str] = None):
         """Ouvre une caméra par ID ou alias"""
@@ -166,11 +161,11 @@ class CameraManager:
         with self.lock:
             return alias in self.camera_instances
     
-    def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
+    def get_camera_frame(self, alias: str) -> Optional[Dict[str, np.ndarray]]:
         """Récupère une frame d'une caméra"""
         with self.lock:
             if alias not in self.camera_instances:
-                return False, None, None
+                return None
             
             try:
                 camera_instance = self.camera_instances[alias]
@@ -179,7 +174,7 @@ class CameraManager:
                 error_msg = self.config.get('core', 'camera_manager.messages.frame_error', 
                                           'Failed to get frame: {error}')
                 logger.error(error_msg.format(error=str(e)))
-                return False, None, None
+                return None
     
     def get_camera_info(self, alias: str) -> Optional[Dict]:
         """Récupère les informations d'une caméra"""
@@ -187,7 +182,7 @@ class CameraManager:
             for camera_info in self.cameras.values():
                 if camera_info.get('alias') == alias:
                     return camera_info
-            return False, None, None
+            return None
     
     def list_open_cameras(self) -> List[str]:
         """Liste des caméras ouvertes"""
@@ -200,47 +195,35 @@ class CameraManager:
             aliases = list(self.camera_instances.keys())
             for alias in aliases:
                 self.close_camera(alias)
-    def start_streaming(self) -> bool:
-        """Démarre le streaming pour toutes les caméras ouvertes"""
-        with self.lock:
-            if self._is_streaming:
-                logger.warning("⚠️ Streaming déjà actif")
-                return True
-            
-            if not self.camera_instances:
-                logger.warning("⚠️ Aucune caméra ouverte pour le streaming")
-                return False
-            
-            try:
-                for alias, camera_instance in self.camera_instances.items():
-                    if hasattr(camera_instance, 'start_streaming'):
-                        camera_instance.start_streaming()
-                        logger.info(f"✅ Streaming démarré pour {alias}")
-                
-                self._is_streaming = True
-                logger.info("✅ Streaming global démarré")
-                return True
-    def stop_streaming(self):
-        """Arrête le streaming pour toutes les caméras - Méthode attendue par main_window.py"""
-        with self.lock:
-            if not self._is_streaming:
-                logger.debug("⚠️ Streaming déjà arrêté")
-                return
-            
-            try:
-                for alias, camera_instance in self.camera_instances.items():
-                    if hasattr(camera_instance, 'stop_streaming'):
-                        camera_instance.stop_streaming()
-                        logger.info(f"✅ Streaming arrêté pour {alias}")
-                
-                self._is_streaming = False
-                logger.info("✅ Streaming global arrêté")
-                
-            except Exception as e:
-                logger.error(f"Erreur arrêt streaming: {e}")
+    
+    def _get_camera_info(self, camera_id: str) -> Optional[Dict]:
+        """Récupère les infos d'une caméra par ID"""
+        for serial, info in self.cameras.items():
+            if serial == camera_id or info.get('alias') == camera_id:
+                return info
+        return None
+    
+    def _create_camera_instance(self, camera_info: Dict):
+        """Crée une instance de caméra selon le type"""
+        camera_type = camera_info.get('type')
+        
+        if camera_type == 'realsense':
+            return RealSenseCamera(camera_info, self.config)
+        elif camera_type == 'usb3':
+            return USB3CameraDriver(camera_info, self.config)
+        else:
+            error_msg = self.config.get('core', 'camera_manager.messages.unknown_type', 
+                                      'Unknown camera type: {type}')
+            logger.error(error_msg.format(type=camera_type))
+            return None
 
-    @property
-    def active_cameras(self) -> List[str]:
-        """Liste des caméras actives - Propriété attendue par main_window.py"""
-        with self.lock:
-            return list(self.camera_instances.keys())
+# CORRECTION: Import de MeasuresTab déplacé en bas pour éviter les imports circulaires
+# Note: Si MeasuresTab est utilisée dans cette classe, l'importer conditionnellement
+def get_measures_tab_class():
+    """Import conditionnel de MeasuresTab pour éviter les imports circulaires"""
+    try:
+        from ui.measures_tab import MeasuresTab
+        return MeasuresTab
+    except ImportError:
+        logger.warning("⚠️ MeasuresTab non disponible")
+        return None
