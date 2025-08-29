@@ -548,10 +548,12 @@ class CameraTab(QWidget):
         
         if ADVANCED_DISPLAY:
             display_widget = CameraDisplayWidget(alias, self.config)
+            # CORRECTION: Le widget avancé émet 'clicked' pas 'camera_clicked'
+            display_widget.clicked.connect(self._on_camera_display_clicked)
         else:
             display_widget = CameraDisplayWidget(alias, self.config)
-        
-        display_widget.camera_clicked.connect(self._on_camera_display_clicked)
+            # Le widget simple émet 'camera_clicked'
+            display_widget.camera_clicked.connect(self._on_camera_display_clicked)
         
         if ADVANCED_DISPLAY and hasattr(display_widget, 'set_depth_view'):
             depth_enabled = self.depth_checkbox.isChecked()
