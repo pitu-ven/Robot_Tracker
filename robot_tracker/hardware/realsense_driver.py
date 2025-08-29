@@ -223,36 +223,76 @@ class RealSenseCamera:
         logger.info("🔧 Filtres post-traitement configurés")
 
     def get_frames(self) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-        """Récupère les frames couleur et profondeur"""
+        """Récupère les frames couleur et profondeur - Version corrigée"""
         if not self.is_streaming:
             return False, None, None
         
         try:
-            frames = self.pipeline.poll_for_frames()
+            # CORRECTION 1: Utiliser wait_for_frames avec un petit timeout au lieu de poll_for_frames
+            # poll_for_frames() retourne None immédiatement si pas de frame
+            # wait_for_frames() attend jusqu'à timeout_ms
+            timeout_ms = self.config.get('camera', 'realsense.frame_timeout_ms', 100)  # 100ms timeout
+            
+            try:
+                frames = self.pipeline.wait_for_frames(timeout_ms)
+            except RuntimeError as e:
+                # Timeout ou pas de frames - c'est normal parfois
+                return False, None, None
+            
             if not frames:
                 return False, None, None
             
             with self.frame_lock:
-                if self.enable_filters:
-                    depth_frame = frames.get_depth_frame()
-                    if depth_frame:
-                        depth_frame = self.decimation_filter.process(depth_frame)
-                        depth_frame = self.spatial_filter.process(depth_frame)
-                        depth_frame = self.temporal_filter.process(depth_frame)
-                        depth_frame = self.hole_filling_filter.process(depth_frame)
-                
-                if self.enable_align and hasattr(self, 'align'):
-                    frames = self.align.process(frames)
-                
+                # CORRECTION 2: Récupérer les frames brutes d'abord
                 color_frame = frames.get_color_frame()
                 depth_frame = frames.get_depth_frame()
                 
                 if not color_frame:
                     return False, None, None
                 
-                color_image = np.asanyarray(color_frame.get_data())
-                depth_image = np.asanyarray(depth_frame.get_data()) if depth_frame else None
+                # CORRECTION 3: Appliquer l'alignement AVANT les filtres de profondeur
+                if self.enable_align and hasattr(self, 'align') and depth_frame:
+                    try:
+                        aligned_frames = self.align.process(frames)
+                        color_frame = aligned_frames.get_color_frame()
+                        depth_frame = aligned_frames.get_depth_frame()
+                    except Exception as e:
+                        logger.debug(f"Erreur alignement: {e}")
                 
+                # CORRECTION 4: Appliquer les filtres de profondeur dans le bon ordre
+                if self.enable_filters and depth_frame:
+                    try:
+                        # Ordre recommandé des filtres RealSense
+                        if hasattr(self, 'decimation_filter'):
+                            depth_frame = self.decimation_filter.process(depth_frame)
+                        if hasattr(self, 'temporal_filter'):
+                            depth_frame = self.temporal_filter.process(depth_frame)
+                        if hasattr(self, 'spatial_filter'):
+                            depth_frame = self.spatial_filter.process(depth_frame)
+                        if hasattr(self, 'hole_filling_filter'):
+                            depth_frame = self.hole_filling_filter.process(depth_frame)
+                    except Exception as e:
+                        logger.debug(f"Erreur filtres: {e}")
+                
+                # CORRECTION 5: Conversion en numpy avec gestion d'erreur
+                try:
+                    color_image = np.asanyarray(color_frame.get_data())
+                    depth_image = np.asanyarray(depth_frame.get_data()) if depth_frame else None
+                    
+                    # Vérification que les images ne sont pas vides
+                    if color_image.size == 0:
+                        logger.warning("⚠️ Image couleur vide")
+                        return False, None, None
+                        
+                    # CORRECTION 6: Vérification format BGR vs RGB
+                    # RealSense retourne normalement en BGR avec rs.format.bgr8
+                    # Si l'image semble incorrecte, vérifier la configuration du stream
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erreur conversion numpy: {e}")
+                    return False, None, None
+                
+                # Mise à jour des données internes
                 self.color_frame = color_frame
                 self.depth_frame = depth_frame
                 self.last_timestamp = frames.get_timestamp()

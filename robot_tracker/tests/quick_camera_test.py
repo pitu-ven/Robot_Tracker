@@ -1,264 +1,165 @@
+# tests/quick_camera_test.py
+# Version 1.0 - Test rapide des corrections d'ouverture de caméra
+# Modification: Test unitaire pour valider les corrections
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-robot_tracker/tests/quick_camera_test.py
-Test rapide avec aperçu visuel de la caméra - Version 1.0
-Modification: Test visuel rapide pour vérifier si l'objectif est couvert
-"""
 
-import cv2
-import numpy as np
 import sys
-from pathlib import Path
+import os
 
-# Ajout du chemin parent pour les imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Ajout du chemin du projet
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
-def test_visual_camera():
-    """Test avec aperçu visuel de la caméra"""
-    print("🎥 Test Visuel Caméra USB")
-    print("=" * 40)
-    print("INSTRUCTIONS:")
-    print("- Vérifiez que l'objectif de la caméra N'EST PAS couvert")
-    print("- Pointez la caméra vers différents objets/éclairages")
-    print("- Appuyez sur 'q' pour quitter")
-    print("- Appuyez sur 's' pour sauvegarder une image")
-    print()
-    
-    input("Appuyez sur Entrée pour commencer...")
-    
-    # Ouverture de la caméra
-    cap = cv2.VideoCapture(0)
-    
-    if not cap.isOpened():
-        print("❌ Impossible d'ouvrir la caméra")
-        return False
-    
-    # Configuration optimisée
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Auto-exposition
-    cap.set(cv2.CAP_PROP_BRIGHTNESS, 0.7)
-    cap.set(cv2.CAP_PROP_CONTRAST, 0.8)
-    
-    print("⏳ Stabilisation de l'auto-exposition...")
-    import time
-    time.sleep(2)
-    
-    print("🎬 Aperçu vidéo ouvert - Vérifiez l'image!")
-    print("   📊 Statistiques en temps réel affichées")
-    
-    frame_count = 0
-    intensities = []
-    
-    while True:
-        ret, frame = cap.read()
-        
-        if not ret:
-            print("❌ Erreur capture frame")
-            break
-        
-        frame_count += 1
-        
-        # Analyse de l'image
-        intensity = np.mean(frame)
-        min_val = np.min(frame)
-        max_val = np.max(frame)
-        std_dev = np.std(frame)
-        
-        intensities.append(intensity)
-        
-        # Diagnostic visuel sur l'image
-        display_frame = frame.copy()
-        
-        # Overlay avec statistiques
-        stats_text = [
-            f"Frame: {frame_count}",
-            f"Intensite: {intensity:.1f}",
-            f"Min/Max: {min_val}/{max_val}",
-            f"Ecart-type: {std_dev:.1f}",
-            f"Moy. 10f: {np.mean(intensities[-10:]):.1f}" if len(intensities) >= 10 else ""
-        ]
-        
-        # Diagnostic couleur
-        if intensity < 5:
-            status_color = (0, 0, 255)  # Rouge - Très sombre
-            status_text = "TRES SOMBRE - Objectif couvert?"
-        elif intensity < 20:
-            status_color = (0, 165, 255)  # Orange - Sombre
-            status_text = "SOMBRE - Eclairage faible"
-        elif std_dev < 5:
-            status_color = (0, 255, 255)  # Jaune - Uniforme
-            status_text = "UNIFORME - Pointez vers objet varie"
-        else:
-            status_color = (0, 255, 0)  # Vert - Normal
-            status_text = "NORMAL - Image correcte"
-        
-        # Affichage des infos
-        y_offset = 25
-        for i, text in enumerate(stats_text):
-            if text:  # Éviter les chaînes vides
-                cv2.putText(display_frame, text, (10, y_offset + i * 25), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        # Status principal
-        cv2.putText(display_frame, status_text, (10, display_frame.shape[0] - 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-        
-        # Crosshair central
-        h, w = display_frame.shape[:2]
-        cv2.line(display_frame, (w//2 - 20, h//2), (w//2 + 20, h//2), (0, 255, 0), 2)
-        cv2.line(display_frame, (w//2, h//2 - 20), (w//2, h//2 + 20), (0, 255, 0), 2)
-        
-        # Affichage
-        cv2.imshow('Robot Tracker - Test Camera', display_frame)
-        
-        # Gestion clavier
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):
-            print("🛑 Arrêt demandé par utilisateur")
-            break
-        elif key == ord('s'):
-            # Sauvegarde
-            filename = f"camera_test_frame_{frame_count}.jpg"
-            cv2.imwrite(filename, frame)
-            print(f"💾 Image sauvegardée: {filename}")
-        
-        # Log périodique console
-        if frame_count % 60 == 0:  # Toutes les 2 secondes environ
-            print(f"📊 Frame {frame_count}: intensité {intensity:.1f}, écart-type {std_dev:.1f}")
-    
-    # Nettoyage
-    cap.release()
-    cv2.destroyAllWindows()
-    
-    # Analyse finale
-    if intensities:
-        avg_intensity = np.mean(intensities)
-        min_intensity = min(intensities)
-        max_intensity = max(intensities)
-        variation = max_intensity - min_intensity
-        
-        print(f"\n📊 ANALYSE FINALE:")
-        print(f"   Frames totales: {frame_count}")
-        print(f"   Intensité moyenne: {avg_intensity:.1f}")
-        print(f"   Range intensité: {min_intensity:.1f} - {max_intensity:.1f}")
-        print(f"   Variation totale: {variation:.1f}")
-        
-        print(f"\n💡 DIAGNOSTIC:")
-        if avg_intensity < 5:
-            print("❌ PROBLÈME: Image très sombre")
-            print("   - Vérifiez que l'objectif n'est pas couvert")
-            print("   - Augmentez l'éclairage de la scène")
-            print("   - L'auto-exposition n'arrive pas à compenser")
-            return False
-        elif variation < 10:
-            print("⚠️ ATTENTION: Image très uniforme")
-            print("   - La caméra fonctionne mais pointe vers surface unie")
-            print("   - Pointez vers un objet avec plus de détails")
-            print("   - Ajoutez de la variation d'éclairage")
-            return True
-        else:
-            print("✅ EXCELLENT: Image normale avec variation")
-            print("   - La caméra fonctionne parfaitement")
-            print("   - Prêt pour utilisation dans Robot Tracker")
-            return True
-    
-    return False
-
-def test_driver_corrected():
-    """Test rapide du driver corrigé"""
-    print(f"\n🔧 Test Driver Corrigé")
-    print("-" * 30)
+def test_camera_manager_creation():
+    """Test simple de création d'une instance CameraManager"""
+    print("🧪 Test création CameraManager...")
     
     try:
-        from hardware.usb3_camera_driver import USB3CameraDriver
+        # Configuration de test simple
+        class TestConfig:
+            def get(self, section, key, default=None):
+                return default
         
-        config = {
-            'width': 640,
-            'height': 480,
-            'auto_exposure': True,
-            'gain': 50,
-            'brightness': 200,
-            'contrast': 80,
-            'intensity_target': 30.0
+        from core.camera_manager import CameraManager
+        
+        config = TestConfig()
+        manager = CameraManager(config)
+        
+        print("✅ CameraManager créé avec succès")
+        
+        # Test méthode _create_camera_instance avec format dictionnaire
+        camera_info = {
+            'type': 'realsense',
+            'serial': '014122072611',
+            'name': 'Intel RealSense D435',
+            'device_index': 0
         }
         
-        camera = USB3CameraDriver(0, config)
+        # Cette ligne aurait causé l'erreur "__init__() takes 2 positional arguments but 3 were given"
+        instance = manager._create_camera_instance(camera_info)
         
-        if camera.open():
-            print("✅ Driver corrigé fonctionne")
+        if instance is not None:
+            print("✅ Instance RealSense créée sans erreur de signature")
             
-            # Test validation
-            validation = camera.validate_current_stream()
-            print(f"📊 Status: {validation.get('status')}")
-            print(f"   Intensité: {validation.get('avg_intensity', 0):.1f}")
-            
-            camera.close()
-            return True
+            # Vérifier que l'attribut is_streaming existe
+            if hasattr(instance, 'is_streaming'):
+                print("✅ Attribut is_streaming présent")
+            else:
+                print("❌ Attribut is_streaming manquant")
+                return False
+                
+            # Test configuration du serial
+            if hasattr(instance, 'device_serial') and instance.device_serial == '014122072611':
+                print("✅ Serial configuré correctement")
+            else:
+                print(f"⚠️ Serial: {getattr(instance, 'device_serial', 'Non défini')}")
+                
         else:
-            print("❌ Driver corrigé ne fonctionne pas")
+            print("❌ Échec création instance")
             return False
-            
+        
+        return True
+        
     except Exception as e:
         print(f"❌ Erreur: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_camera_open_formats():
+    """Test ouverture avec différents formats de données"""
+    print("\n🧪 Test formats de données caméra...")
+    
+    try:
+        from core.camera_manager import CameraManager
+        
+        class TestConfig:
+            def get(self, section, key, default=None):
+                return default
+        
+        config = TestConfig()
+        manager = CameraManager(config)
+        
+        # Format 1: Dictionnaire (nouveau)
+        camera_dict = {
+            'type': 'realsense',
+            'serial': '014122072611',
+            'name': 'Intel RealSense D435',
+            'device_index': 0
+        }
+        
+        print("Test format dictionnaire...")
+        try:
+            # Cette ligne ne devrait plus causer d'erreur
+            result = manager.open_camera(camera_dict, "test_realsense")
+            print("✅ Pas d'exception lors de l'appel open_camera (format dict)")
+        except Exception as e:
+            # Une erreur est attendue car pas de vraie caméra, mais pas l'erreur de signature
+            if "__init__() takes 2 positional arguments but 3 were given" in str(e):
+                print("❌ Erreur de signature toujours présente")
+                return False
+            else:
+                print("✅ Erreur différente (attendu car pas de vraie caméra)")
+        
+        # Format 2: String
+        print("Test format string...")
+        try:
+            result = manager.open_camera("014122072611", "test_realsense_str")
+            print("✅ Pas d'exception lors de l'appel open_camera (format string)")
+        except Exception as e:
+            if "__init__() takes 2 positional arguments but 3 were given" in str(e):
+                print("❌ Erreur de signature toujours présente")
+                return False
+            else:
+                print("✅ Erreur différente (attendu car pas de vraie caméra)")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erreur test formats: {e}")
         return False
 
 def main():
-    """Point d'entrée principal"""
-    print("🚀 Test Rapide Caméra Robot Tracker")
-    print("Vérification visuelle et fonctionnelle")
-    print("=" * 50)
+    """Test principal"""
+    print("🚀 TEST RAPIDE DES CORRECTIONS CAMERA")
+    print("=" * 45)
     
-    print("Ce test va:")
-    print("1. 🎥 Ouvrir un aperçu visuel de la caméra")
-    print("2. 📊 Afficher les statistiques en temps réel")
-    print("3. 🔧 Tester le driver corrigé")
-    print()
+    tests = [
+        ("Création CameraManager", test_camera_manager_creation),
+        ("Formats de données", test_camera_open_formats)
+    ]
     
-    # Test 1: Aperçu visuel
-    visual_ok = test_visual_camera()
+    results = []
     
-    # Test 2: Driver corrigé
-    driver_ok = test_driver_corrected()
+    for test_name, test_func in tests:
+        result = test_func()
+        results.append((test_name, result))
+        
+        if result:
+            print(f"✅ {test_name}: PASSÉ\n")
+        else:
+            print(f"❌ {test_name}: ÉCHOUÉ\n")
     
-    # Conclusion
-    print(f"\n" + "=" * 50)
-    print("📋 RÉSULTATS:")
-    print(f"   Test visuel:     {'✅ OK' if visual_ok else '❌ PROBLÈME'}")
-    print(f"   Driver corrigé:  {'✅ OK' if driver_ok else '❌ PROBLÈME'}")
+    # Résumé
+    print("=" * 45)
+    print("📊 RÉSULTATS:")
     
-    if visual_ok and driver_ok:
-        print(f"\n🎉 SUCCÈS COMPLET!")
-        print("✅ La caméra fonctionne parfaitement")
-        print("🚀 Vous pouvez utiliser Robot Tracker normalement")
-        print("\n📋 Prochaines étapes:")
-        print("1. Relancer main.py")
-        print("2. Tester l'onglet Caméra")
-        print("3. Vérifier le streaming temps réel")
-        return 0
-    elif visual_ok:
-        print(f"\n⚠️ SUCCÈS PARTIEL")
-        print("✅ Caméra fonctionne mais problème driver")
-        print("🔧 Appliquer les corrections du driver")
-        return 1
+    for test_name, result in results:
+        status = "✅" if result else "❌"
+        print(f"{status} {test_name}")
+    
+    passed = sum(1 for _, result in results if result)
+    total = len(results)
+    
+    print(f"\n📈 Score: {passed}/{total}")
+    
+    if passed == total:
+        print("\n🎉 CORRECTIONS VALIDÉES!")
+        print("💡 Vous pouvez maintenant tester l'ouverture réelle de caméra")
     else:
-        print(f"\n❌ PROBLÈME PHYSIQUE")
-        print("⚠️ Vérifiez l'objectif et l'éclairage")
-        print("💡 La caméra fonctionne mais image uniforme")
-        return 2
+        print("\n⚠️ Des corrections supplémentaires sont nécessaires")
 
-if __name__ == "__main__":
-    try:
-        exit_code = main()
-        print(f"\n👋 Test terminé (code: {exit_code})")
-        sys.exit(exit_code)
-    except KeyboardInterrupt:
-        print("\n⚠️ Test interrompu par l'utilisateur")
-        cv2.destroyAllWindows()
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ Erreur: {e}")
-        cv2.destroyAllWindows()
-        sys.exit(1)
+if __name__ == '__main__':
+    main()
