@@ -1,6 +1,6 @@
 # core/target_detector.py  
-# Version 1.0 - Création détecteur multi-types (ArUco, réfléchissants, LEDs)
-# Modification: Implémentation détection unifiée avec configuration JSON
+# Version 1.1 - Correction compatibilité OpenCV ArUco 4.6+
+# Modification: Support des nouvelles API ArUco (ArucoDetector) et anciennes (detectMarkers)
 
 import cv2
 import numpy as np
@@ -66,24 +66,75 @@ class TargetDetector:
         logger.info("TargetDetector initialisé")
     
     def _init_aruco_detector(self):
-        """Initialise le détecteur ArUco"""
+        """Initialise le détecteur ArUco avec compatibilité multi-versions OpenCV"""
         try:
             # Dictionnaire ArUco depuis config
             dict_name = self.aruco_config.get('dictionary_type', '4X4_50')
-            self.aruco_dict = cv2.aruco.getPredefinedDictionary(
-                getattr(cv2.aruco, f'DICT_{dict_name}')
-            )
             
-            # Paramètres de détection depuis config
-            self.aruco_params = cv2.aruco.DetectorParameters()
+            # Support des différentes versions d'OpenCV
+            try:
+                # Nouvelle API (OpenCV 4.6+)
+                if hasattr(cv2.aruco, 'getPredefinedDictionary'):
+                    self.aruco_dict = cv2.aruco.getPredefinedDictionary(
+                        getattr(cv2.aruco, f'DICT_{dict_name}')
+                    )
+                else:
+                    # Ancienne API (OpenCV < 4.6)
+                    self.aruco_dict = cv2.aruco.Dictionary_get(
+                        getattr(cv2.aruco, f'DICT_{dict_name}')
+                    )
+            except AttributeError:
+                # Fallback pour versions très anciennes
+                self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+                logger.warning(f"⚠️ Dictionnaire {dict_name} non trouvé, utilisation de DICT_4X4_50")
+            
+            # Paramètres de détection selon la version d'OpenCV
             detection_params = self.aruco_config.get('detection_params', {})
             
-            for param, value in detection_params.items():
-                if hasattr(self.aruco_params, param):
-                    setattr(self.aruco_params, param, value)
+            try:
+                # Nouvelle API (OpenCV 4.6+) - ArucoDetector
+                if hasattr(cv2.aruco, 'ArucoDetector'):
+                    # Création des paramètres
+                    if hasattr(cv2.aruco, 'DetectorParameters'):
+                        self.aruco_params = cv2.aruco.DetectorParameters()
+                    else:
+                        self.aruco_params = cv2.aruco.DetectorParameters_create()
                     
-            logger.info(f"ArUco initialisé: {dict_name}")
-            
+                    # Configuration des paramètres
+                    for param, value in detection_params.items():
+                        if hasattr(self.aruco_params, param):
+                            setattr(self.aruco_params, param, value)
+                    
+                    # Création du détecteur moderne
+                    self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+                    self.use_modern_api = True
+                    logger.info(f"ArUco initialisé: {dict_name} (API moderne)")
+                    
+                else:
+                    # Ancienne API (OpenCV < 4.6) - detectMarkers
+                    if hasattr(cv2.aruco, 'DetectorParameters_create'):
+                        self.aruco_params = cv2.aruco.DetectorParameters_create()
+                    else:
+                        self.aruco_params = cv2.aruco.DetectorParameters()
+                    
+                    # Configuration des paramètres
+                    for param, value in detection_params.items():
+                        if hasattr(self.aruco_params, param):
+                            setattr(self.aruco_params, param, value)
+                    
+                    self.aruco_detector = None  # Pas d'objet détecteur unifié
+                    self.use_modern_api = False
+                    logger.info(f"ArUco initialisé: {dict_name} (API classique)")
+                    
+            except Exception as e:
+                logger.error(f"Erreur configuration ArUco: {e}")
+                # Mode fallback minimal
+                self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+                self.aruco_params = cv2.aruco.DetectorParameters_create()
+                self.aruco_detector = None
+                self.use_modern_api = False
+                logger.warning("⚠️ Mode fallback ArUco activé")
+                    
         except Exception as e:
             logger.error(f"Erreur init ArUco: {e}")
             self.detection_enabled[TargetType.ARUCO] = False
@@ -129,18 +180,28 @@ class TargetDetector:
         return results
     
     def _detect_aruco_markers(self, frame: np.ndarray) -> List[DetectionResult]:
-        """Détecte les marqueurs ArUco"""
+        """Détecte les marqueurs ArUco avec compatibilité multi-versions"""
         try:
             # Conversion en niveaux de gris si nécessaire
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
             
-            # Détection
-            corners, ids, rejected = cv2.aruco.detectMarkers(
-                gray, self.aruco_dict, parameters=self.aruco_params
-            )
+            # Détection selon l'API disponible
+            if self.use_modern_api and self.aruco_detector:
+                # Nouvelle API (OpenCV 4.6+)
+                corners, ids, rejected = self.aruco_detector.detectMarkers(gray)
+            else:
+                # Ancienne API (OpenCV < 4.6)
+                if hasattr(cv2.aruco, 'detectMarkers'):
+                    corners, ids, rejected = cv2.aruco.detectMarkers(
+                        gray, self.aruco_dict, parameters=self.aruco_params
+                    )
+                else:
+                    # Version très ancienne ou problème d'import
+                    logger.error("❌ Aucune méthode de détection ArUco disponible")
+                    return []
             
             results = []
-            if ids is not None:
+            if ids is not None and len(ids) > 0:
                 for i, marker_id in enumerate(ids.flatten()):
                     corner_points = corners[i][0]
                     
@@ -148,7 +209,7 @@ class TargetDetector:
                     center = tuple(np.mean(corner_points, axis=0).astype(int))
                     
                     # Taille approximative
-                    size = np.linalg.norm(corner_points[0] - corner_points[2])
+                    size = float(np.linalg.norm(corner_points[0] - corner_points[2]))
                     
                     # Rotation (angle du marqueur)
                     rotation = self._calculate_marker_rotation(corner_points)
@@ -179,20 +240,22 @@ class TargetDetector:
             # Conversion HSV
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             
-            # Seuillage depuis config
-            hsv_ranges = self.reflective_config.get('hsv_ranges', {})
-            lower = np.array(hsv_ranges.get('lower', [0, 0, 200]))
-            upper = np.array(hsv_ranges.get('upper', [180, 30, 255]))
+            # Seuillage pour marqueurs réfléchissants (surfaces très claires)
+            hsv_ranges = self.reflective_config.get('hsv_ranges', {
+                'lower': [0, 0, 200],
+                'upper': [180, 30, 255]
+            })
             
+            lower = np.array(hsv_ranges['lower'])
+            upper = np.array(hsv_ranges['upper'])
             mask = cv2.inRange(hsv, lower, upper)
             
-            # Morphologie pour nettoyer
-            morph_config = self.reflective_config.get('morphology', {})
-            iterations = morph_config.get('iterations', 2)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.reflective_kernel, iterations=iterations)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.reflective_kernel, iterations=iterations)
+            # Morphologie pour nettoyage
+            if self.reflective_config.get('morphology', {}).get('enabled', True):
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.reflective_kernel)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.reflective_kernel)
             
-            # Détection des contours
+            # Détection de contours
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             results = []
@@ -204,11 +267,11 @@ class TargetDetector:
             for i, contour in enumerate(contours):
                 area = cv2.contourArea(contour)
                 
-                # Filtrage par taille
-                if not (min_area <= area <= max_area):
+                # Filtrage par aire
+                if area < min_area or area > max_area:
                     continue
-                    
-                # Filtrage par circularité
+                
+                # Calcul de la circularité
                 perimeter = cv2.arcLength(contour, True)
                 if perimeter == 0:
                     continue
@@ -217,118 +280,117 @@ class TargetDetector:
                 if circularity < min_circularity:
                     continue
                 
-                # Centre et propriétés
+                # Centre de masse
                 M = cv2.moments(contour)
-                if M['m00'] == 0:
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                else:
                     continue
-                    
-                center_x = int(M['m10'] / M['m00'])
-                center_y = int(M['m01'] / M['m00'])
-                center = (center_x, center_y)
                 
-                # Approximation rectangulaire pour les coins
-                epsilon = 0.02 * cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, epsilon, True)
-                corners = [tuple(pt[0]) for pt in approx]
+                # Boîte englobante pour les coins
+                rect = cv2.minAreaRect(contour)
+                box = cv2.boxPoints(rect)
+                box = np.int0(box)
                 
                 result = DetectionResult(
                     target_type=TargetType.REFLECTIVE,
-                    id=i,  # ID séquentiel pour réfléchissants
-                    center=center,
-                    corners=corners,
-                    confidence=circularity,  # Circularité comme confiance
-                    size=np.sqrt(area),
-                    rotation=0.0,  # Pas de rotation pour les cercles
+                    id=i,  # ID séquentiel pour les marqueurs réfléchissants
+                    center=(cx, cy),
+                    corners=[tuple(pt) for pt in box],
+                    confidence=min(1.0, circularity),  # Confiance basée sur circularité
+                    size=float(np.sqrt(area)),
+                    rotation=float(rect[2]),
                     timestamp=time.time(),
                     additional_data={
                         'area': area,
-                        'perimeter': perimeter,
-                        'circularity': circularity
+                        'circularity': circularity,
+                        'perimeter': perimeter
                     }
                 )
                 results.append(result)
-                
+            
             self.stats['detections_by_type'][TargetType.REFLECTIVE] += len(results)
             return results
             
         except Exception as e:
-            logger.error(f"Erreur détection réfléchissants: {e}")
+            logger.error(f"Erreur détection marqueurs réfléchissants: {e}")
             return []
     
     def _detect_led_markers(self, frame: np.ndarray) -> List[DetectionResult]:
-        """Détecte les LEDs colorées"""
+        """Détecte les marqueurs LED colorés"""
         try:
+            if not self.led_config.get('enabled', False):
+                return []
+            
+            # Conversion HSV
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             results = []
             
             # Détection pour chaque couleur configurée
             color_presets = self.led_config.get('color_presets', {})
-            detection_params = self.led_config.get('detection_params', {})
             
-            for color_name, color_range in color_presets.items():
-                # Masque couleur
-                lower = np.array([color_range['h'][0], color_range['s'][0], color_range['v'][0]])
-                upper = np.array([color_range['h'][1], color_range['s'][1], color_range['v'][1]])
+            for color_name, color_config in color_presets.items():
+                h_range = color_config.get('h_range', [0, 10])
+                s_range = color_config.get('s_range', [50, 255])
+                v_range = color_config.get('v_range', [50, 255])
                 
+                # Création du masque de couleur
+                lower = np.array([h_range[0], s_range[0], v_range[0]])
+                upper = np.array([h_range[1], s_range[1], v_range[1]])
                 mask = cv2.inRange(hsv, lower, upper)
                 
-                # Filtrage gaussien
-                blur_size = detection_params.get('gaussian_blur_size', 5)
-                mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+                # Gestion du rouge (qui traverse 0 en teinte)
+                if 'secondary_h' in color_config:
+                    sec_h = color_config['secondary_h']
+                    lower2 = np.array([sec_h[0], s_range[0], v_range[0]])
+                    upper2 = np.array([sec_h[1], s_range[1], v_range[1]])
+                    mask2 = cv2.inRange(hsv, lower2, upper2)
+                    mask = cv2.bitwise_or(mask, mask2)
                 
                 # Morphologie
-                iterations = detection_params.get('morphology_iterations', 2)
-                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.led_kernel, iterations=iterations)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.led_kernel)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.led_kernel)
                 
-                # Détection contours
+                # Détection de contours
                 contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
-                min_area = detection_params.get('min_contour_area', 30)
-                max_area = detection_params.get('max_contour_area', 2000)
-                
-                for contour in contours:
+                for i, contour in enumerate(contours):
                     area = cv2.contourArea(contour)
                     
-                    if not (min_area <= area <= max_area):
+                    # Filtrage par aire
+                    if area < 20 or area > 2000:
                         continue
                     
-                    # Centre
+                    # Centre de masse
                     M = cv2.moments(contour)
-                    if M['m00'] == 0:
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                    else:
                         continue
-                        
-                    center_x = int(M['m10'] / M['m00'])
-                    center_y = int(M['m01'] / M['m00'])
-                    center = (center_x, center_y)
                     
-                    # Enclosing circle pour taille
-                    (x, y), radius = cv2.minEnclosingCircle(contour)
-                    
-                    # Corners approximatifs (carré autour du cercle)
-                    corners = [
-                        (int(x - radius), int(y - radius)),
-                        (int(x + radius), int(y - radius)),
-                        (int(x + radius), int(y + radius)),  
-                        (int(x - radius), int(y + radius))
-                    ]
+                    # Boîte englobante
+                    x, y, w, h = cv2.boundingRect(contour)
+                    corners = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
                     
                     result = DetectionResult(
                         target_type=TargetType.LED,
-                        id=hash(color_name) % 1000,  # ID basé sur la couleur
-                        center=center,
+                        id=hash(color_name) % 1000 + i,  # ID basé sur couleur + index
+                        center=(cx, cy),
                         corners=corners,
-                        confidence=min(1.0, area / max_area),
-                        size=radius * 2,
+                        confidence=min(1.0, area / 500.0),  # Confiance basée sur taille
+                        size=float(np.sqrt(area)),
                         rotation=0.0,
                         timestamp=time.time(),
                         additional_data={
                             'color': color_name,
                             'area': area,
-                            'radius': radius
+                            'hsv_mask_pixels': cv2.countNonZero(mask)
                         }
                     )
                     results.append(result)
-                    
+            
             self.stats['detections_by_type'][TargetType.LED] += len(results)
             return results
             
@@ -398,47 +460,3 @@ class TargetDetector:
             
         except Exception as e:
             logger.error(f"Erreur mise à jour paramètres {target_type.value}: {e}")
-    
-    def draw_detections(self, frame: np.ndarray, detections: List[DetectionResult]) -> np.ndarray:
-        """Dessine les détections sur l'image"""
-        display_config = self.ui_config.get('display', {})
-        colors = display_config.get('colors', {})
-        fonts = display_config.get('fonts', {})
-        overlays = display_config.get('overlays', {})
-        
-        result_frame = frame.copy()
-        
-        for detection in detections:
-            # Couleur selon le type
-            color_key = f"{detection.target_type.value}_detection"
-            color = tuple(colors.get(color_key, [255, 255, 255]))
-            
-            # Dessin des coins
-            if len(detection.corners) >= 4:
-                pts = np.array(detection.corners, dtype=np.int32)
-                cv2.polylines(result_frame, [pts], True, color, 2)
-            
-            # Centre
-            cv2.circle(result_frame, detection.center, 3, color, -1)
-            
-            # ID si activé
-            if overlays.get('show_marker_ids', True):
-                font_config = fonts.get('marker_id', {})
-                font_size = font_config.get('size', 12) / 30.0  # Normalisation OpenCV
-                thickness = font_config.get('thickness', 2)
-                
-                text = f"ID:{detection.id}"
-                text_pos = (detection.center[0] + 10, detection.center[1] - 10)
-                
-                cv2.putText(result_frame, text, text_pos, 
-                          cv2.FONT_HERSHEY_SIMPLEX, font_size, color, thickness)
-            
-            # Confiance si activée
-            if overlays.get('show_confidence', True) and detection.target_type != TargetType.ARUCO:
-                conf_text = f"{detection.confidence:.2f}"
-                conf_pos = (detection.center[0] + 10, detection.center[1] + 25)
-                
-                cv2.putText(result_frame, conf_text, conf_pos,
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-        
-        return result_frame

@@ -1,8 +1,8 @@
 {
   "_metadata": {
-    "version": "2.0",
-    "description": "Configuration tracking avec TargetTab simplifié (sans gestion caméra redondante)",
-    "last_modified": "2025-01-15T15:30:00Z",
+    "version": "2.1",
+    "description": "Configuration tracking avec correction chemin ArUco et meilleurs patterns",
+    "last_modified": "2025-01-15T16:00:00Z",
     "compatibility": "Robot Trajectory Controller v1.6+"
   },
 
@@ -10,27 +10,51 @@
     "aruco": {
       "enabled": true,
       "auto_detect_folder": true,
-      "default_markers_folder": "./aruco_markers",
+      "default_markers_folder": "./ArUco",
+      "fallback_folders": [
+        "C:/0_COMPOSITADOUR/6_JERICO/Robot_Tracker/ArUco",
+        "./aruco_markers",
+        "../ArUco",
+        "./markers"
+      ],
       "config_file_name": "markers_config.json",
       "supported_extensions": [".png", ".jpg", ".jpeg"],
       "detection_params": {
         "adaptiveThreshWinSizeMin": 3,
         "adaptiveThreshWinSizeMax": 23,
         "maxMarkerPerimeterRate": 4.0,
-        "minMarkerPerimeterRate": 0.1,
+        "minMarkerPerimeterRate": 0.03,
         "polygonalApproxAccuracyRate": 0.03,
         "minMarkerDistanceRate": 0.1,
         "cornerRefinementWinSize": 5,
         "cornerRefinementMaxIterations": 30,
-        "cornerRefinementMinAccuracy": 0.1
+        "cornerRefinementMinAccuracy": 0.1,
+        "minCornerDistanceRate": 0.05,
+        "minDistanceToBorder": 3,
+        "minMarkerDistance": 10.0,
+        "cornerRefinementMethod": 0,
+        "errorCorrectionRate": 0.6,
+        "aprilTagQuadDecimate": 1.0,
+        "aprilTagQuadSigma": 0.0,
+        "aprilTagMinClusterPixels": 5,
+        "aprilTagMaxNmaxima": 10,
+        "aprilTagCriticalRad": 0.1745329252,
+        "aprilTagMaxLineFitMse": 10.0,
+        "aprilTagMinWhiteBlackDiff": 5,
+        "aprilTagDeglitch": 0,
+        "detectInvertedMarker": false,
+        "useAruco3Detection": false,
+        "minSideLengthCanonicalImg": 32,
+        "minMarkerLengthRatioOriginalImg": 0.0
       },
       "marker_size_mm": 100,
       "camera_matrix": null,
-      "distortion_coeffs": null
+      "distortion_coeffs": null,
+      "dictionary_type": "5X5_100"
     },
 
     "reflective_markers": {
-      "enabled": true,
+      "enabled": false,
       "detection_method": "hsv_threshold",
       "hsv_ranges": {
         "lower": [0, 0, 200],
@@ -79,215 +103,131 @@
         }
       },
       "preprocessing": {
-        "gaussian_blur_kernel": 5,
-        "brightness_boost": 1.2,
-        "contrast_boost": 1.1
+        "gaussian_blur": {
+          "enabled": true,
+          "kernel_size": 5,
+          "sigma": 1.5
+        },
+        "morphology": {
+          "enabled": true,
+          "operation": "opening",
+          "kernel_size": 3,
+          "iterations": 1
+        }
       },
-      "tracking": {
-        "smoothing_factor": 0.8,
-        "max_disappeared_frames": 30,
-        "min_detection_confidence": 0.6
+      "detection_params": {
+        "min_area": 20,
+        "max_area": 2000,
+        "morphology_kernel": 3,
+        "contour_approximation": "simple"
       }
     }
   },
 
   "target_tab_ui": {
-    "window": {
-      "title": "Onglet Cible - Détection et Suivi",
-      "update_interval_ms": 33,
-      "ui_refresh_rate": 30,
+    "layout": {
       "control_panel_width": 320,
-      "video_display_min_height": 480
+      "video_display_min_height": 480,
+      "controls_bar_height": 60,
+      "status_bar_height": 25
     },
-
-    "roi": {
-      "enabled": true,
-      "max_roi_count": 5,
-      "selection_tools": ["rectangle", "polygon"],
-      "default_tool": "rectangle",
-      "line_thickness": 2,
-      "selection_handles_size": 8,
-      "snap_distance": 10,
-      "colors": {
-        "active_roi": [255, 255, 0],
-        "inactive_roi": [128, 128, 128],
-        "creating_roi": [0, 255, 255],
-        "selected_roi": [255, 0, 255]
-      }
+    "colors": {
+      "aruco_detection": [0, 255, 0],
+      "reflective_detection": [255, 0, 0],
+      "led_detection": [0, 0, 255],
+      "roi_active": [255, 255, 0],
+      "trajectory_line": [255, 165, 0]
     },
-
+    "fonts": {
+      "marker_id": {"size": 12, "bold": true},
+      "statistics": {"size": 10, "bold": false},
+      "status": {"size": 9, "bold": false}
+    },
     "display": {
-      "overlays": {
-        "show_aruco_ids": true,
-        "show_aruco_axes": false,
-        "show_detection_boxes": true,
-        "show_confidence_scores": true,
-        "show_roi_boundaries": true,
-        "show_tracking_trail": true,
-        "trail_length": 50
-      },
-      "colors": {
-        "aruco_detection": [0, 255, 0],
-        "reflective_detection": [255, 0, 0], 
-        "led_detection": [0, 0, 255],
-        "tracking_trail": [255, 165, 0],
-        "text_overlay": [255, 255, 255],
-        "background_overlay": [0, 0, 0]
-      },
-      "fonts": {
-        "marker_id": {"size": 14, "bold": true, "thickness": 2},
-        "confidence": {"size": 10, "bold": false, "thickness": 1},
-        "statistics": {"size": 12, "bold": false, "thickness": 1},
-        "roi_label": {"size": 11, "bold": true, "thickness": 2}
-      },
-      "zoom": {
-        "min_zoom": 25,
-        "max_zoom": 400,
-        "default_zoom": 100,
-        "zoom_step": 25
-      }
-    },
-
-    "tracking": {
-      "fps_target": 30,
-      "confidence_threshold": 80,
-      "detection_types_default": {
-        "aruco": true,
-        "reflective": true,
-        "led": false
-      },
-      "auto_start_on_camera": false,
-      "save_intermediate_frames": false
-    },
-
-    "export": {
-      "formats": ["csv", "json", "xlsx"],
-      "default_format": "csv",
-      "auto_export_on_stop": false,
-      "include_timestamps": true,
-      "include_confidence_scores": true,
-      "include_roi_info": true,
-      "fields": {
-        "basic": ["timestamp", "target_id", "x", "y", "confidence"],
-        "extended": ["timestamp", "target_id", "target_type", "x", "y", "z", "confidence", "roi_id", "detection_method"],
-        "full": ["timestamp", "target_id", "target_type", "x", "y", "z", "rotation", "confidence", "roi_id", "detection_method", "frame_number", "processing_time"]
-      },
-      "default_field_set": "extended"
-    },
-
-    "ui_labels": {
-      "groups": {
-        "camera_status": "📷 État Caméra",
-        "aruco_config": "🎯 Configuration ArUco", 
-        "detection_types": "🔍 Types de Détection",
-        "roi_tools": "📐 Outils ROI",
-        "tracking_controls": "🎬 Contrôles Tracking",
-        "statistics": "📊 Statistiques"
-      },
-      "buttons": {
-        "select_aruco_folder": "📁 Sélectionner Dossier",
-        "rescan_folder": "🔄",
-        "advanced_config": "⚙️ Configuration Avancée",
-        "roi_rectangle": "⬜ Rectangle",
-        "roi_polygon": "⬟ Polygone", 
-        "clear_roi": "🗑️ Effacer",
-        "start_tracking": "▶️ Démarrer",
-        "stop_tracking": "⏹️ Arrêter",
-        "export_data": "💾 Exporter Données"
-      },
-      "tooltips": {
-        "camera_status": "État de connexion avec l'onglet Caméra",
-        "aruco_folder": "Dossier contenant les marqueurs ArUco générés",
-        "rescan": "Rescanner le dossier ArUco sélectionné",
-        "detection_aruco": "Activer/désactiver la détection des marqueurs ArUco",
-        "detection_reflective": "Activer/désactiver la détection des marqueurs réfléchissants", 
-        "detection_led": "Activer/désactiver la détection des LEDs colorées",
-        "roi_rectangle": "Créer une région d'intérêt rectangulaire",
-        "roi_polygon": "Créer une région d'intérêt polygonale",
-        "fps_target": "Fréquence de traitement cible (fps)",
-        "confidence": "Seuil de confiance minimum pour les détections (%)",
-        "zoom_slider": "Niveau de zoom de l'affichage vidéo"
-      },
-      "status_messages": {
-        "no_camera": "❌ Aucune caméra active",
-        "camera_ready": "✅ Caméra: {alias}",
-        "waiting_stream": "En attente du flux caméra...",
-        "tracking_active": "🎬 Tracking actif - {fps:.1f} fps",
-        "tracking_inactive": "⏹️ Tracking arrêté",
-        "no_aruco_folder": "Aucun dossier ArUco sélectionné",
-        "aruco_loaded": "✅ {count} marqueurs ArUco détectés",
-        "roi_creating": "📐 Création ROI en cours...",
-        "export_success": "💾 Données exportées vers: {path}",
-        "export_error": "❌ Erreur export: {error}"
-      }
+      "show_marker_ids": true,
+      "show_confidence": true,
+      "show_corners": true,
+      "overlay_transparency": 0.7,
+      "line_thickness": 2
     }
   },
 
-  "kalman_filter": {
-    "enabled": true,
-    "process_noise": 0.01,
-    "measurement_noise": 0.1,
-    "prediction_enabled": true,
-    "max_prediction_frames": 10,
-    "initialization": {
-      "min_detections": 3,
-      "max_init_frames": 30
+  "tracking_pipeline": {
+    "performance": {
+      "max_fps": 30,
+      "frame_buffer_size": 10,
+      "detection_timeout_ms": 100,
+      "max_detection_time_ms": 50
     },
-    "tracking": {
-      "max_disappeared_frames": 15,
-      "distance_threshold": 50.0,
-      "velocity_smoothing": 0.7
+    "kalman_filter": {
+      "enabled": true,
+      "process_noise": 0.01,
+      "measurement_noise": 0.1,
+      "initial_error": 1.0,
+      "prediction_steps": 3
+    },
+    "data_management": {
+      "max_history_points": 10000,
+      "auto_cleanup_interval_s": 60,
+      "memory_limit_mb": 100
     }
   },
 
-  "performance": {
-    "max_tracking_history": 1000,
-    "stats_update_interval": 1000,
-    "frame_skip_on_overload": true,
-    "max_processing_time_ms": 25,
-    "threading": {
-      "detection_thread": true,
-      "display_thread": false,
-      "max_queue_size": 5
+  "export": {
+    "formats": ["csv", "json", "xlsx"],
+    "default_format": "csv",
+    "auto_export_on_stop": false,
+    "include_timestamps": true,
+    "include_confidence_scores": true,
+    "include_roi_info": true,
+    "fields": {
+      "basic": ["timestamp", "target_id", "x", "y", "confidence"],
+      "extended": ["timestamp", "target_id", "target_type", "x", "y", "z", "confidence", "roi_id", "detection_method"],
+      "full": ["timestamp", "target_id", "target_type", "x", "y", "z", "rotation", "confidence", "roi_id", "detection_method", "frame_number", "processing_time"]
     },
-    "memory": {
-      "max_cached_frames": 10,
-      "cleanup_interval": 30000,
-      "force_gc_threshold": 100
-    }
+    "default_field_set": "extended"
   },
 
-  "debugging": {
-    "enabled": false,
-    "save_debug_images": false,
-    "debug_output_folder": "./debug_tracking",
-    "log_detection_times": false,
-    "verbose_roi_info": false,
-    "show_fps_overlay": true,
-    "profiling": {
-      "enabled": false,
-      "profile_detection": false,
-      "profile_display": false
-    }
-  },
-
-  "integration": {
-    "camera_manager": {
-      "frame_request_timeout_ms": 100,
-      "retry_on_failure": true,
-      "max_retries": 3,
-      "fallback_behavior": "use_last_frame"
+  "ui_labels": {
+    "groups": {
+      "camera_status": "📷 État Caméra",
+      "aruco_config": "🎯 Configuration ArUco", 
+      "detection_types": "🔍 Types de Détection",
+      "roi_tools": "📐 Outils ROI",
+      "tracking_controls": "🎬 Contrôles Tracking",
+      "statistics": "📊 Statistiques"
     },
-    "signals": {
-      "emit_target_detected": true,
-      "emit_tracking_status": true,
-      "emit_performance_stats": false,
-      "status_update_interval": 500
+    "buttons": {
+      "select_aruco_folder": "📁 Sélectionner Dossier",
+      "rescan_folder": "🔄",
+      "advanced_config": "⚙️ Configuration Avancée",
+      "roi_rectangle": "⬜ Rectangle",
+      "roi_polygon": "⬟ Polygone", 
+      "clear_roi": "🗑️ Effacer",
+      "start_tracking": "▶️ Démarrer",
+      "stop_tracking": "⏹️ Arrêter",
+      "export_data": "💾 Exporter Données"
     },
-    "compatibility": {
-      "camera_tab_version": "4.9+",
-      "main_window_version": "1.6+",
-      "config_manager_version": "1.0+"
+    "tooltips": {
+      "camera_status": "État de connexion avec l'onglet Caméra",
+      "aruco_folder": "Dossier contenant les marqueurs ArUco générés",
+      "rescan": "Rescanner le dossier ArUco sélectionné",
+      "detection_aruco": "Activer/désactiver la détection des marqueurs ArUco",
+      "detection_reflective": "Activer/désactiver la détection des marqueurs réfléchissants", 
+      "detection_led": "Activer/désactiver la détection des LEDs colorées",
+      "roi_rectangle": "Créer une région d'intérêt rectangulaire",
+      "roi_polygon": "Créer une région d'intérêt polygonale",
+      "fps_target": "Fréquence de traitement cible (fps)",
+      "confidence": "Seuil de confiance minimum pour les détections (%)",
+      "zoom_slider": "Niveau de zoom de l'affichage vidéo"
+    },
+    "status_messages": {
+      "ready": "Prêt pour détection",
+      "tracking_active": "Tracking en cours...",
+      "camera_disconnected": "Caméra déconnectée",
+      "no_markers_detected": "Aucun marqueur détecté",
+      "aruco_folder_empty": "Dossier ArUco vide ou invalide",
+      "detection_error": "Erreur de détection"
     }
   }
 }
