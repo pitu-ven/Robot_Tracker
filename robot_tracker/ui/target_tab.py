@@ -200,7 +200,7 @@ class TargetTab(QWidget):
     def _check_camera_status(self):
         """Vérifie l'état des caméras via CameraManager"""
         try:
-            # Récupération des caméras actives depuis CameraManager
+            # Récupération des caméras actives depuis CameraManager (LISTE d'alias)
             active_cameras = self.camera_manager.active_cameras
             
             if not active_cameras:
@@ -217,10 +217,15 @@ class TargetTab(QWidget):
                 
                 # Prendre la première caméra active par défaut
                 if not self.selected_camera_alias or self.selected_camera_alias not in active_cameras:
-                    self.selected_camera_alias = list(active_cameras.keys())[0]
+                    self.selected_camera_alias = active_cameras[0]
                 
-                camera_info = active_cameras[self.selected_camera_alias]
-                camera_name = camera_info.get('name', self.selected_camera_alias)
+                # Récupération des infos de la caméra depuis detected cameras
+                camera_info = self.camera_manager.get_camera_info(self.selected_camera_alias)
+                
+                if camera_info:
+                    camera_name = camera_info.get('name', self.selected_camera_alias)
+                else:
+                    camera_name = self.selected_camera_alias
                 
                 self.camera_status_label.setText(f"✅ Caméra: {camera_name}")
                 self.camera_status_label.setStyleSheet("color: green; font-weight: bold;")
