@@ -526,33 +526,41 @@ class TargetTab(QWidget):
     # === MÉTHODES DE TRAITEMENT ===
     
     def _process_current_frame(self):
-        """Traite la frame courante du CameraManager"""
+        """Traite la frame courante avec optimisations performance"""
         if not self.camera_ready or not self.selected_camera_alias:
             return
         
+        start_time = time.time()
+        
         try:
-            # Récupération frame depuis CameraManager centralisé
+            # Récupération frame avec timeout
             success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
             
             if success and frame is not None:
                 self.current_frame = frame.copy()
                 self.current_depth_frame = depth_frame
                 
-                # Traitement de détection si tracking actif
+                # Traitement de détection SEULEMENT si tracking actif
                 if self.is_tracking:
-                    self._detect_targets_in_frame()
+                    # Skip detection si frame précédente pas encore traitée
+                    if not hasattr(self, '_processing_detection') or not self._processing_detection:
+                        self._detect_targets_in_frame()
                 
                 # Affichage avec overlays
                 self._update_display()
+                
+                # Mesure performance réelle
+                processing_time = (time.time() - start_time) * 1000  # ms
+                if processing_time > 33:  # Plus de 33ms
+                    logger.debug(f"⚠️ Frame lente: {processing_time:.1f}ms")
+                    
             else:
-                # Frame non disponible - vérifier si caméra toujours active
                 if not self.camera_manager.is_camera_open(self.selected_camera_alias):
                     logger.warning(f"⚠️ Caméra {self.selected_camera_alias} non disponible")
                     self._check_camera_status()
             
         except Exception as e:
             logger.error(f"❌ Erreur traitement frame: {e}")
-            # Re-vérifier l'état en cas d'erreur
             self._check_camera_status()
     
     def _detect_targets_in_frame(self):
@@ -560,6 +568,12 @@ class TargetTab(QWidget):
         if self.current_frame is None:
             return
         
+        # Protection contre traitement concurrent
+        if hasattr(self, '_processing_detection') and self._processing_detection:
+            return
+        
+        self._processing_detection = True
+
         try:
             # CORRECTION: Utilisation de detect_all_targets au lieu de detect
             detected_results = self.target_detector.detect_all_targets(self.current_frame)
@@ -588,6 +602,8 @@ class TargetTab(QWidget):
         
         except Exception as e:
             logger.error(f"❌ Erreur détection: {e}")
+        finally:
+            self._processing_detection = False
     
     def _update_display(self):
         """Met à jour l'affichage avec la frame et les overlays"""
@@ -631,11 +647,149 @@ class TargetTab(QWidget):
         
         # Cibles détectées
         for target in self.detected_targets:
-            # TODO: Dessiner marqueurs détectés selon leur type
-            # ArUco: rectangles avec ID
-            # Réfléchissants: cercles
-            # LEDs: cercles colorés
-            pass
+            try:
+                center = target.center
+                target_type = target.target_type
+                
+                if target_type == TargetType.ARUCO:
+                    # === MARQUEURS ARUCO ===
+                    
+                    # Contour du marqueur (carré)
+                    if len(target.corners) == 4:
+                        corners = np.array(target.corners, dtype=np.int32)
+                        cv2.polylines(frame, [corners], True, (0, 255, 0), 2)  # Vert
+                    
+                    # Axes 3D colorés
+                    axis_length = int(target.size * 0.4)
+                    rotation_rad = np.radians(target.rotation)
+                    
+                    # Axe X (Rouge)
+                    x_end = (
+                        int(center[0] + axis_length * np.cos(rotation_rad)),
+                        int(center[1] + axis_length * np.sin(rotation_rad))
+                    )
+                    cv2.arrowedLine(frame, center, x_end, (0, 0, 255), 3, tipLength=0.3)
+                    
+                    # Axe Y (Vert)
+                    y_end = (
+                        int(center[0] - axis_length * np.sin(rotation_rad)),
+                        int(center[1] + axis_length * np.cos(rotation_rad))
+                    )
+                    cv2.arrowedLine(frame, center, y_end, (0, 255, 0), 3, tipLength=0.3)
+                    
+                    # Axe Z (Bleu) - simulé
+                    z_offset = int(axis_length * 0.6)
+                    z_end = (center[0] - z_offset//4, center[1] - z_offset//4)
+                    cv2.arrowedLine(frame, center, z_end, (255, 0, 0), 3, tipLength=0.3)
+                    
+                    # ID du marqueur avec fond
+                    text = f"ID:{target.id}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.7
+                    thickness = 2
+                    
+                    # Taille du texte
+                    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                    text_x = center[0] - text_size[0] // 2
+                    text_y = center[1] - int(target.size * 0.6)
+                    
+                    # Fond blanc semi-transparent
+                    overlay = frame.copy()
+                    cv2.rectangle(overlay, 
+                                (text_x - 8, text_y - text_size[1] - 5),
+                                (text_x + text_size[0] + 8, text_y + 8),
+                                (255, 255, 255), -1)
+                    cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+                    
+                    # Texte noir
+                    cv2.putText(frame, text, (text_x, text_y), 
+                            font, font_scale, (0, 0, 0), thickness)
+                    
+                    # Cercle central
+                    cv2.circle(frame, center, 4, (255, 255, 255), -1)
+                    cv2.circle(frame, center, 4, (0, 0, 0), 1)
+                    
+                elif target_type == TargetType.REFLECTIVE:
+                    # === MARQUEURS RÉFLÉCHISSANTS ===
+                    
+                    # Cercle principal
+                    radius = int(target.size / 2)
+                    cv2.circle(frame, center, radius, (0, 0, 255), 2)  # Rouge
+                    
+                    # Cercle interne
+                    cv2.circle(frame, center, radius//2, (0, 0, 255), 1)
+                    
+                    # Point central
+                    cv2.circle(frame, center, 3, (0, 0, 255), -1)
+                    
+                    # Croix de visée
+                    cross_size = radius + 10
+                    cv2.line(frame, 
+                            (center[0] - cross_size, center[1]), 
+                            (center[0] + cross_size, center[1]), 
+                            (0, 0, 255), 1)
+                    cv2.line(frame, 
+                            (center[0], center[1] - cross_size), 
+                            (center[0], center[1] + cross_size), 
+                            (0, 0, 255), 1)
+                    
+                    # Étiquette
+                    text = f"REF:{target.id}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    cv2.putText(frame, text, 
+                            (center[0] - 30, center[1] - radius - 10), 
+                            font, font_scale, (0, 0, 255), 1)
+                    
+                elif target_type == TargetType.LED:
+                    # === MARQUEURS LED ===
+                    
+                    # Couleur selon les données additionnelles
+                    led_color = (0, 255, 255)  # Cyan par défaut
+                    if target.additional_data and 'color' in target.additional_data:
+                        color_name = target.additional_data['color']
+                        color_map = {
+                            'red': (0, 0, 255),
+                            'green': (0, 255, 0), 
+                            'blue': (255, 0, 0),
+                            'yellow': (0, 255, 255),
+                            'cyan': (255, 255, 0),
+                            'magenta': (255, 0, 255)
+                        }
+                        led_color = color_map.get(color_name, (0, 255, 255))
+                    
+                    # Cercle LED avec effet de halo
+                    radius = int(target.size / 2)
+                    
+                    # Halo externe
+                    cv2.circle(frame, center, radius + 8, led_color, 1)
+                    cv2.circle(frame, center, radius + 4, led_color, 1)
+                    
+                    # Cercle principal
+                    cv2.circle(frame, center, radius, led_color, 2)
+                    
+                    # Centre brillant
+                    cv2.circle(frame, center, 2, (255, 255, 255), -1)
+                    
+                    # Étiquette colorée
+                    text = f"LED:{target.id}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    
+                    # Fond coloré pour l'étiquette
+                    text_size = cv2.getTextSize(text, font, font_scale, 1)[0]
+                    label_pos = (center[0] - text_size[0]//2, center[1] + radius + 20)
+                    
+                    cv2.rectangle(frame,
+                                (label_pos[0] - 5, label_pos[1] - text_size[1] - 3),
+                                (label_pos[0] + text_size[0] + 5, label_pos[1] + 3),
+                                led_color, -1)
+                    
+                    cv2.putText(frame, text, label_pos,
+                            font, font_scale, (0, 0, 0), 1)
+            except Exception as e:
+                logger.debug(f"Erreur overlay cible {target.id}: {e}")
+                continue
     
     # === MÉTHODES UI CALLBACKS ===
     
@@ -918,9 +1072,21 @@ class TargetTab(QWidget):
     def _start_roi_creation(self, roi_type):
         """Démarre la création d'une ROI"""
         try:
-            self.roi_manager.start_roi_creation(roi_type)
+            # Conversion string → ROIType enum
+            from core.roi_manager import ROIType
+            
+            if roi_type == 'rectangle':
+                roi_enum = ROIType.RECTANGLE
+            elif roi_type == 'polygon':
+                roi_enum = ROIType.POLYGON
+            else:
+                logger.warning(f"Type ROI non supporté: {roi_type}")
+                return
+            
+            self.roi_manager.start_roi_creation(roi_enum)
             logger.info(f"📐 Création ROI {roi_type} démarrée")
             # TODO: Activer mode interactif sur l'affichage
+            
         except Exception as e:
             logger.error(f"❌ Erreur création ROI: {e}")
     
