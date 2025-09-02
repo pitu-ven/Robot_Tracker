@@ -78,15 +78,14 @@ class TargetTab(QWidget):
         self.current_depth_frame = None
         self.camera_ready = False
         self.selected_camera_alias = None
+        self.current_frame_size = None
+        self.roi_preview_pos = None
         
-        # Données de tracking
+        # === VARIABLES TRACKING ===
+        self.tracking_active = False
+        self.target_detector = None
         self.detected_targets = []
         self.tracking_history = []
-        self.detection_stats = {
-            'total_detections': 0,
-            'fps': 0.0,
-            'last_detection_time': 0.0
-        }
         
         # ORDRE CORRECT :
         # 1. D'ABORD : Composants de détection
@@ -1227,12 +1226,23 @@ class TargetTab(QWidget):
 
     # === GESTION ÉVÉNEMENTS SOURIS ===
     def _on_display_mouse_press(self, event):
-        """Gestion clic souris sur l'affichage - Version détaillée"""
+        """Gestion clic souris - VERSION RENFORCÉE"""
         pos_screen = (event.pos().x(), event.pos().y())
         logger.info(f"🔍 DEBUG: Clic souris détecté à {pos_screen}")
         
-        if not hasattr(self, 'roi_manager') or not self.roi_manager.is_creating:
+        # === VÉRIFICATIONS PRÉALABLES ===
+        if not hasattr(self, 'roi_manager') or not self.roi_manager:
+            logger.warning("⚠️ roi_manager non disponible")
+            return
+            
+        if not self.roi_manager.is_creating:
             logger.warning("⚠️ ROI Manager non en mode création")
+            return
+        
+        # === VÉRIFICATION STREAMING ACTIF ===
+        if not hasattr(self, 'streaming_active') or not self.streaming_active:
+            logger.warning("⚠️ Streaming non actif - impossible de convertir coordonnées")
+            self._show_status_message("⚠️ Veuillez démarrer le streaming avant de créer des ROI", 3000)
             return
             
         # Conversion coordonnées écran vers image
@@ -1240,7 +1250,8 @@ class TargetTab(QWidget):
         logger.info(f"🔍 DEBUG: Coordonnées converties: {pos_screen} -> {pos_image}")
         
         if pos_image is None:
-            logger.warning("⚠️ Impossible de convertir coordonnées souris")
+            logger.warning("⚠️ Impossible de convertir coordonnées souris - vérifiez que le streaming est actif")
+            self._show_status_message("⚠️ Erreur conversion coordonnées - vérifiez le streaming", 3000)
             return
             
         try:
@@ -1261,6 +1272,25 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur ajout point ROI: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+
+    def _initialize_frame_size_fallback(self):
+        """Initialise une taille de frame par défaut si nécessaire"""
+        try:
+            if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
+                # Valeurs par défaut basées sur la configuration caméra courante
+                default_width = 640
+                default_height = 480
+                
+                # Tentative récupération depuis la configuration
+                if hasattr(self, 'camera_manager') and self.camera_manager:
+                    # Ici, vous pourriez récupérer la résolution depuis la config caméra
+                    pass
+                    
+                self.current_frame_size = (default_width, default_height)
+                logger.info(f"🔍 DEBUG: Taille frame initialisée par défaut: {self.current_frame_size}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur initialisation taille frame: {e}")
 
     def _on_display_mouse_move(self, event):
         """Gestion déplacement souris - Preview temps réel"""
@@ -1296,12 +1326,28 @@ class TargetTab(QWidget):
                 logger.warning("⚠️ Impossible de finaliser le polygone")
 
     def _screen_to_image_coords(self, screen_pos):
-        """Convertit coordonnées écran vers coordonnées image"""
+        """Convertit coordonnées écran vers coordonnées image - VERSION ROBUSTE"""
         try:
-            # Vérifier que nous avons une taille d'image
+            # === VÉRIFICATION AVEC FALLBACK ===
             if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
-                logger.warning("⚠️ Taille frame non disponible pour conversion coordonnées")
-                return None
+                logger.warning("⚠️ current_frame_size non définie, tentative récupération depuis caméra")
+                
+                # Tentative récupération frame actuelle
+                if hasattr(self, 'camera_manager') and self.camera_manager:
+                    try:
+                        frame = self.camera_manager.get_latest_frame()
+                        if frame is not None:
+                            self.current_frame_size = (frame.shape[1], frame.shape[0])
+                            logger.info(f"✅ Taille frame récupérée: {self.current_frame_size}")
+                        else:
+                            logger.error("❌ Aucune frame disponible depuis camera_manager")
+                            return None
+                    except Exception as e:
+                        logger.error(f"❌ Erreur récupération frame: {e}")
+                        return None
+                else:
+                    logger.error("❌ camera_manager non disponible")
+                    return None
                 
             # Récupérer tailles
             display_size = self.camera_display.size()
@@ -1310,38 +1356,56 @@ class TargetTab(QWidget):
             logger.info(f"🔍 DEBUG: Conversion coords - Display: {display_size.width()}x{display_size.height()}, "
                     f"Image: {img_width}x{img_height}, Click: {screen_pos.x()},{screen_pos.y()}")
             
+            # === VALIDATION TAILLES ===
+            if display_size.width() <= 0 or display_size.height() <= 0:
+                logger.error("❌ Taille affichage invalide")
+                return None
+                
+            if img_width <= 0 or img_height <= 0:
+                logger.error("❌ Taille image invalide")
+                return None
+            
             # Calcul du ratio et offset pour conserver aspect ratio
             display_ratio = display_size.width() / display_size.height()
             image_ratio = img_width / img_height
             
             if display_ratio > image_ratio:
-                # Barres noires horizontales
+                # Barres noires horizontales (image plus haute que l'affichage)
                 scale = display_size.height() / img_height
                 scaled_width = img_width * scale
                 offset_x = (display_size.width() - scaled_width) / 2
                 offset_y = 0
             else:
-                # Barres noires verticales
+                # Barres noires verticales (image plus large que l'affichage)
                 scale = display_size.width() / img_width
                 scaled_height = img_height * scale
                 offset_x = 0
                 offset_y = (display_size.height() - scaled_height) / 2
                 
+            logger.info(f"🔍 DEBUG: Scale={scale:.2f}, Offset=({offset_x:.1f}, {offset_y:.1f})")
+                
             # Conversion coordonnées
             image_x = int((screen_pos.x() - offset_x) / scale)
             image_y = int((screen_pos.y() - offset_y) / scale)
             
-            logger.info(f"🔍 DEBUG: Coordonnées finales: ({image_x}, {image_y})")
+            logger.info(f"🔍 DEBUG: Coordonnées converties: ({screen_pos.x()}, {screen_pos.y()}) -> ({image_x}, {image_y})")
             
-            # Vérification limites
-            if 0 <= image_x < img_width and 0 <= image_y < img_height:
+            # Vérification limites avec tolérance
+            if -5 <= image_x <= img_width + 5 and -5 <= image_y <= img_height + 5:
+                # Clamping pour rester dans les limites
+                image_x = max(0, min(image_x, img_width - 1))
+                image_y = max(0, min(image_y, img_height - 1))
+                
+                logger.info(f"🔍 DEBUG: Coordonnées finales (après clamping): ({image_x}, {image_y})")
                 return (image_x, image_y)
             else:
-                logger.warning(f"⚠️ Coordonnées hors limites: ({image_x}, {image_y})")
+                logger.warning(f"⚠️ Coordonnées hors limites: ({image_x}, {image_y}) pour image {img_width}x{img_height}")
                 return None
                 
         except Exception as e:
             logger.error(f"❌ Erreur conversion coordonnées: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
         
     def _finalize_roi_creation(self):
@@ -1586,7 +1650,7 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
         self._check_camera_status()
 
     def _process_frame(self):
-        """Traitement des frames avec détection et rendu ROI"""
+        """Traitement des frames avec détection et rendu ROI - VERSION CORRIGÉE"""
         if not self.camera_manager or not self.streaming_active:
             return
             
@@ -1596,8 +1660,9 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
             if frame is None:
                 return
                 
-            # Sauvegarde taille pour conversion coordonnées
-            self.current_frame_size = (frame.shape[1], frame.shape[0])
+            # === CORRECTION CRITIQUE: Sauvegarde taille pour conversion coordonnées ===
+            self.current_frame_size = (frame.shape[1], frame.shape[0])  # (width, height)
+            logger.info(f"🔍 DEBUG: Frame size mise à jour: {self.current_frame_size}")
             
             # Copie pour traitement
             display_frame = frame.copy()
@@ -1611,7 +1676,7 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
                 except Exception as e:
                     logger.warning(f"⚠️ Erreur détection: {e}")
             
-            # NOUVEAU: Rendu des ROI
+            # Rendu des ROI
             if hasattr(self, 'roi_manager') and self.roi_manager:
                 try:
                     display_frame = self.roi_manager.draw_rois(display_frame)
