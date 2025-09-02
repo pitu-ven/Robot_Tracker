@@ -69,7 +69,7 @@ class ROIManager:
         
         logger.info("ROIManager initialisé")
     
-    def start_roi_creation(self, roi_type: ROIType) -> bool:
+    def start_roi_creation(self, roi_type) -> bool:
         """Démarre la création d'une nouvelle ROI"""
         if len(self.rois) >= self.max_roi_count:
             logger.warning(f"Limite de {self.max_roi_count} ROI atteinte")
@@ -77,6 +77,13 @@ class ROIManager:
             
         if self.is_creating:
             self.cancel_roi_creation()
+        
+        # Support string et enum
+        if isinstance(roi_type, str):
+            roi_type = self._convert_roi_type_from_string(roi_type)
+        elif not isinstance(roi_type, ROIType):
+            logger.error(f"Type ROI invalide: {type(roi_type)}")
+            return False
             
         self.is_creating = True
         self.creation_type = roi_type
@@ -331,26 +338,26 @@ class ROIManager:
             cv2.circle(frame, self.temp_points[0], 3, preview_color, -1)
     
     def _draw_selection_handles(self, frame: np.ndarray, roi: ROI):
-        """Dessine les poignées de sélection"""
-        handle_color = (255, 255, 255)
+        """Dessine les poignées de sélection d'une ROI"""
+        handle_color = (255, 255, 255)  # Blanc
+        handle_border = (0, 0, 0)       # Noir
         
         for point in roi.points:
-            cv2.rectangle(frame, 
-                         (point[0] - self.handle_size//2, point[1] - self.handle_size//2),
-                         (point[0] + self.handle_size//2, point[1] + self.handle_size//2),
-                         handle_color, 1)
+            # Poignée avec bordure
+            cv2.circle(frame, point, self.handle_size, handle_border, -1)
+            cv2.circle(frame, point, self.handle_size - 1, handle_color, -1)
+
     
-    def _snap_to_grid(self, point: Tuple[int, int]) -> Tuple[int, int]:
+    def _snap_to_grid(self, point: Tuple[int, int], grid_size: int = 5) -> Tuple[int, int]:
         """Aligne un point sur une grille virtuelle"""
-        snap_dist = self.snap_distance
-        if snap_dist <= 1:
+        if self.snap_distance <= 0:
             return point
             
         x, y = point
-        snapped_x = round(x / snap_dist) * snap_dist
-        snapped_y = round(y / snap_dist) * snap_dist
+        snapped_x = round(x / grid_size) * grid_size
+        snapped_y = round(y / grid_size) * grid_size
         
-        return (int(snapped_x), int(snapped_y))
+        return (snapped_x, snapped_y)
     
     def _calculate_area(self, points: List[Tuple[int, int]]) -> float:
         """Calcule l'aire d'un polygone"""
@@ -358,8 +365,9 @@ class ROIManager:
             return 0.0
             
         try:
-            points_array = np.array(points, dtype=np.int32)
-            return cv2.contourArea(points_array)
+            points_array = np.array(points, dtype=np.float32)
+            area = cv2.contourArea(points_array)
+            return abs(area)
         except:
             return 0.0
     
@@ -442,5 +450,14 @@ class ROIManager:
                 for roi_type in ROIType
             }
         }
+    
+    def _convert_roi_type_from_string(self, roi_type_str: str) -> ROIType:
+        """Convertit une chaîne en ROIType enum"""
+        mapping = {
+            'rectangle': ROIType.RECTANGLE,
+            'polygon': ROIType.POLYGON,
+            'circle': ROIType.CIRCLE
+        }
+        return mapping.get(roi_type_str.lower(), ROIType.RECTANGLE)
 
 import time

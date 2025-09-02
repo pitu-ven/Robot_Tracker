@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import logging
 
+
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QSplitter,
     QGroupBox, QPushButton, QLabel, QComboBox, QSpinBox, QCheckBox,
@@ -295,10 +296,12 @@ class TargetTab(QWidget):
         tools_layout = QHBoxLayout()
         
         self.roi_rect_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.roi_rectangle', '⬜ Rectangle'))
-        self.roi_rect_btn.clicked.connect(lambda: self._start_roi_creation('rectangle'))
+        # MODIFICATION ICI : Passer ROIType.RECTANGLE au lieu de 'rectangle'
+        self.roi_rect_btn.clicked.connect(lambda: self._start_roi_creation(ROIType.RECTANGLE))
         
         self.roi_poly_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.roi_polygon', '⬟ Polygone'))
-        self.roi_poly_btn.clicked.connect(lambda: self._start_roi_creation('polygon'))
+        # MODIFICATION ICI : Passer ROIType.POLYGON au lieu de 'polygon'
+        self.roi_poly_btn.clicked.connect(lambda: self._start_roi_creation(ROIType.POLYGON))
         
         self.clear_roi_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.clear_roi', '🗑️ Effacer'))
         self.clear_roi_btn.clicked.connect(self._clear_all_rois)
@@ -370,11 +373,11 @@ class TargetTab(QWidget):
         return group
     
     def _create_display_area(self):
-        """Zone d'affichage caméra avec overlays"""
+        """Zone d'affichage caméra avec overlays et interactions ROI"""
         display_widget = QWidget()
         layout = QVBoxLayout(display_widget)
         
-        # Zone d'affichage vidéo
+        # Zone d'affichage vidéo avec support interactions
         self.camera_display = QLabel("En attente du flux caméra...")
         self.camera_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.camera_display.setStyleSheet("""
@@ -386,6 +389,19 @@ class TargetTab(QWidget):
             }
         """)
         self.camera_display.setMinimumSize(640, 480)
+        
+        # NOUVEAU: Configuration pour interactions souris
+        self.camera_display.setMouseTracking(False)  # Activé seulement lors création ROI
+        self.current_frame_size = None  # Pour conversion coordonnées
+        self.roi_preview_pos = None     # Position preview souris
+        
+        # Gestionnaire événements double-clic pour polygones
+        def handle_double_click(event):
+            self._on_display_mouse_double_click(event)
+        
+        # Installation gestionnaire événements personnalisé
+        self.camera_display.mouseDoubleClickEvent = handle_double_click
+        
         layout.addWidget(self.camera_display)
         
         # Contrôles affichage
@@ -405,6 +421,12 @@ class TargetTab(QWidget):
         
         controls_layout.addStretch()
         
+        # NOUVEAU: Bouton annuler création ROI
+        self.cancel_roi_btn = QPushButton("❌ Annuler ROI")
+        self.cancel_roi_btn.clicked.connect(self._cancel_roi_creation)
+        self.cancel_roi_btn.setVisible(False)  # Visible seulement pendant création
+        controls_layout.addWidget(self.cancel_roi_btn)
+        
         # Export données
         self.export_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.export_data', '💾 Exporter Données'))
         self.export_btn.clicked.connect(self._export_tracking_data)
@@ -413,7 +435,32 @@ class TargetTab(QWidget):
         
         layout.addLayout(controls_layout)
         
+        # Barre de statut pour instructions ROI
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                background-color: #e3f2fd;
+                color: #1565c0;
+                padding: 5px;
+                border-radius: 3px;
+                font-weight: bold;
+            }
+        """)
+        self.status_label.setVisible(False)
+        layout.addWidget(self.status_label)
+        
         return display_widget
+    
+    def _cancel_roi_creation(self):
+        """Annule la création de ROI en cours"""
+        try:
+            if hasattr(self, 'roi_manager') and self.roi_manager.is_creating:
+                self.roi_manager.cancel_roi_creation()
+                self._finalize_roi_creation()
+                self._show_status_message("Création ROI annulée")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur annulation ROI: {e}")
     
     def _connect_internal_signals(self):
         """Connecte les signaux internes de l'onglet"""
@@ -1069,34 +1116,239 @@ class TargetTab(QWidget):
             except Exception as e:
                 logger.warning(f"⚠️ Erreur mise à jour détection: {e}")
     
-    def _start_roi_creation(self, roi_type):
+    def _start_roi_creation(self, roi_type_str):
         """Démarre la création d'une ROI"""
         try:
-            # Conversion string → ROIType enum
+            # Conversion string vers ROIType enum
             from core.roi_manager import ROIType
+            roi_type_mapping = {
+                'rectangle': ROIType.RECTANGLE,
+                'polygon': ROIType.POLYGON,
+                'circle': ROIType.CIRCLE
+            }
             
-            if roi_type == 'rectangle':
-                roi_enum = ROIType.RECTANGLE
-            elif roi_type == 'polygon':
-                roi_enum = ROIType.POLYGON
-            else:
-                logger.warning(f"Type ROI non supporté: {roi_type}")
+            roi_type = roi_type_mapping.get(roi_type_str)
+            if not roi_type:
+                logger.error(f"❌ Type ROI invalide: {roi_type_str}")
                 return
-            
-            self.roi_manager.start_roi_creation(roi_enum)
-            logger.info(f"📐 Création ROI {roi_type} démarrée")
-            # TODO: Activer mode interactif sur l'affichage
-            
+                
+            # Démarrage création
+            success = self.roi_manager.start_roi_creation(roi_type)
+            if success:
+                logger.info(f"📐 Création ROI {roi_type_str} démarrée")
+                
+                # Activer interface création
+                self._enable_roi_creation_mode(roi_type)
+                # Activer mode interactif sur l'affichage
+                self.camera_display.setMouseTracking(True)
+                self.camera_display.mousePressEvent = self._on_display_mouse_press
+                self.camera_display.mouseMoveEvent = self._on_display_mouse_move
+                self.camera_display.mouseReleaseEvent = self._on_display_mouse_release
+                
+                # Feedback visuel
+                self.roi_rect_btn.setEnabled(False)
+                self.roi_poly_btn.setEnabled(False)
+                
+                # Message d'instruction
+                if roi_type == ROIType.RECTANGLE:
+                    self._show_status_message("Cliquez et glissez pour créer un rectangle")
+                elif roi_type == ROIType.POLYGON:
+                    self._show_status_message("Cliquez pour ajouter des points, double-clic pour terminer")
+                    
+            else:
+                logger.warning("⚠️ Impossible de démarrer la création ROI")
+                
         except Exception as e:
             logger.error(f"❌ Erreur création ROI: {e}")
     
-    def _clear_all_rois(self):
-        """Efface toutes les ROI"""
+    def _enable_roi_creation_mode(self, roi_type):
+        """Active le mode création de ROI"""
+        # Interface souris
+        self.camera_display.setMouseTracking(True)
+        self.camera_display.mousePressEvent = self._on_display_mouse_press
+        self.camera_display.mouseMoveEvent = self._on_display_mouse_move
+        self.camera_display.mouseReleaseEvent = self._on_display_mouse_release
+        
+        # Interface boutons
+        self.roi_rect_btn.setEnabled(False)
+        self.roi_poly_btn.setEnabled(False)
+        self.cancel_roi_btn.setVisible(True)
+        
+        # Message d'instruction
+        if roi_type == ROIType.RECTANGLE:
+            self._show_status_message("Cliquez et glissez pour créer un rectangle", 0)
+        elif roi_type == ROIType.POLYGON:
+            self._show_status_message("Cliquez pour ajouter des points, double-clic pour terminer", 0)
+
+    def _on_display_mouse_press(self, event):
+        """Gestion clic souris sur l'affichage"""
+        if not self.roi_manager.is_creating:
+            return
+            
+        # Conversion coordonnées écran vers image
+        pos = self._screen_to_image_coords(event.pos())
+        if pos is None:
+            return
+            
+        try:
+            # Ajouter point à la ROI en cours
+            completed = self.roi_manager.add_creation_point(pos)
+            
+            if completed:
+                # ROI terminée (rectangle)
+                self._finalize_roi_creation()
+            else:
+                # Continuer création (polygone)
+                self._update_roi_display()
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur ajout point ROI: {e}")
+
+    def _on_display_mouse_move(self, event):
+        """Gestion déplacement souris sur l'affichage"""
+        if not self.roi_manager.is_creating:
+            return
+            
+        # Mise à jour preview en temps réel
+        pos = self._screen_to_image_coords(event.pos())
+        if pos is not None:
+            # Stocker position pour le rendu
+            self.roi_preview_pos = pos
+            self._update_roi_display()
+
+    def _on_display_mouse_release(self, event):
+        """Gestion relâchement souris sur l'affichage"""
+        # Pour rectangles, le relâchement complète la création
+        pass
+
+    def _on_display_mouse_double_click(self, event):
+        """Gestion double-clic sur l'affichage"""
+        if self.roi_manager.is_creating and self.roi_manager.creation_type == ROIType.POLYGON:
+            # Terminer création polygone
+            success = self.roi_manager.complete_polygon_creation()
+            if success:
+                self._finalize_roi_creation()
+
+    def _screen_to_image_coords(self, screen_pos):
+        """Convertit coordonnées écran vers coordonnées image"""
+        try:
+            # Récupérer taille actuelle de l'affichage
+            display_size = self.camera_display.size()
+            
+            # Récupérer taille originale de l'image
+            if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
+                return None
+                
+            img_width, img_height = self.current_frame_size
+            
+            # Calcul du ratio et offset pour conserver aspect ratio
+            display_ratio = display_size.width() / display_size.height()
+            image_ratio = img_width / img_height
+            
+            if display_ratio > image_ratio:
+                # Barres noires horizontales
+                scale = display_size.height() / img_height
+                scaled_width = img_width * scale
+                offset_x = (display_size.width() - scaled_width) / 2
+                offset_y = 0
+            else:
+                # Barres noires verticales
+                scale = display_size.width() / img_width
+                scaled_height = img_height * scale
+                offset_x = 0
+                offset_y = (display_size.height() - scaled_height) / 2
+                
+            # Conversion coordonnées
+            image_x = int((screen_pos.x() - offset_x) / scale)
+            image_y = int((screen_pos.y() - offset_y) / scale)
+            
+            # Vérification limites
+            if 0 <= image_x < img_width and 0 <= image_y < img_height:
+                return (image_x, image_y)
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur conversion coordonnées: {e}")
+            return None
+        
+    def _finalize_roi_creation(self):
+        """Finalise la création d'une ROI - VERSION AMÉLIORÉE"""
+        try:
+            # Désactiver mode interactif
+            self.camera_display.setMouseTracking(False)
+            self.camera_display.mousePressEvent = None
+            self.camera_display.mouseMoveEvent = None
+            self.camera_display.mouseReleaseEvent = None
+            
+            # Réactiver interface
+            self.roi_rect_btn.setEnabled(True)
+            self.roi_poly_btn.setEnabled(True)
+            self.cancel_roi_btn.setVisible(False)
+            
+            # Masquer message de statut
+            if hasattr(self, 'status_label'):
+                self.status_label.setVisible(False)
+            
+            # Mettre à jour compteur
+            self._update_roi_count_display()
+            
+            # Nettoyer variables temporaires
+            if hasattr(self, 'roi_preview_pos'):
+                delattr(self, 'roi_preview_pos')
+                
+            logger.info("✅ Création ROI finalisée")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur finalisation ROI: {e}")
+
+    def _update_roi_count_display(self):
+        """Met à jour l'affichage du nombre de ROI"""
         try:
             roi_count = len(self.roi_manager.rois)
-            self.roi_manager.rois.clear()
-            self.roi_info_label.setText("ROI actives: 0")
+            self.roi_info_label.setText(f"ROI actives: {roi_count}")
+        except Exception as e:
+            logger.error(f"❌ Erreur mise à jour compteur ROI: {e}")
+
+    def _update_roi_display(self):
+        """Met à jour l'affichage avec les ROI"""
+        # Cette méthode sera appelée lors du rendu des frames
+        # pour dessiner les ROI sur l'image
+        pass
+
+    def _show_status_message(self, message, duration_ms=3000):
+        """Affiche un message de statut temporaire"""
+        try:
+            logger.info(f"💬 {message}")
+            
+            # Affichage dans barre de statut
+            if hasattr(self, 'status_label'):
+                self.status_label.setText(message)
+                self.status_label.setVisible(True)
+                
+                # Timer pour masquer automatiquement
+                if not hasattr(self, 'status_timer'):
+                    self.status_timer = QTimer()
+                    
+                self.status_timer.timeout.connect(lambda: self.status_label.setVisible(False))
+                self.status_timer.start(duration_ms)
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur affichage message: {e}")
+
+    def _clear_all_rois(self):
+        """Efface toutes les ROI - VERSION CORRIGÉE"""
+        try:
+            roi_count = len(self.roi_manager.rois) if hasattr(self, 'roi_manager') else 0
+            
+            if hasattr(self, 'roi_manager') and self.roi_manager:
+                self.roi_manager.rois.clear()
+                self.roi_manager.selected_roi_id = None
+                self.roi_manager.cancel_roi_creation()  # Annule création en cours
+                
+            self._update_roi_count_display()
             logger.info(f"🗑️ {roi_count} ROI effacées")
+            
         except Exception as e:
             logger.error(f"❌ Erreur effacement ROI: {e}")
     
@@ -1243,6 +1495,112 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
     def force_camera_refresh(self):
         """Force la vérification de l'état des caméras"""
         self._check_camera_status()
+
+    def _process_frame(self):
+        """Traitement des frames avec détection et rendu ROI"""
+        if not self.camera_manager or not self.streaming_active:
+            return
+            
+        try:
+            # Récupération frame
+            frame = self.camera_manager.get_latest_frame()
+            if frame is None:
+                return
+                
+            # Sauvegarde taille pour conversion coordonnées
+            self.current_frame_size = (frame.shape[1], frame.shape[0])
+            
+            # Copie pour traitement
+            display_frame = frame.copy()
+            
+            # Détection si activée
+            if self.tracking_active and hasattr(self, 'target_detector'):
+                try:
+                    detections = self.target_detector.detect_all_targets(frame)
+                    if detections:
+                        display_frame = self._draw_detections(display_frame, detections)
+                except Exception as e:
+                    logger.warning(f"⚠️ Erreur détection: {e}")
+            
+            # NOUVEAU: Rendu des ROI
+            if hasattr(self, 'roi_manager') and self.roi_manager:
+                try:
+                    display_frame = self.roi_manager.draw_rois(display_frame)
+                    
+                    # Dessin preview ROI en cours de création
+                    if (self.roi_manager.is_creating and 
+                        hasattr(self, 'roi_preview_pos') and 
+                        self.roi_preview_pos):
+                        display_frame = self._draw_roi_preview(display_frame)
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Erreur rendu ROI: {e}")
+            
+            # Conversion et affichage
+            self._update_display_frame(display_frame)
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur traitement frame: {e}")
+
+    def _draw_roi_preview(self, frame):
+        """Dessine l'aperçu de la ROI en cours de création"""
+        try:
+            preview_color = (0, 255, 255)  # Jaune cyan pour preview
+            
+            if (self.roi_manager.creation_type == ROIType.RECTANGLE and 
+                len(self.roi_manager.temp_points) == 1):
+                
+                # Preview rectangle
+                start_point = self.roi_manager.temp_points[0]
+                end_point = self.roi_preview_pos
+                
+                cv2.rectangle(frame, start_point, end_point, preview_color, 2)
+                
+            elif (self.roi_manager.creation_type == ROIType.POLYGON and 
+                self.roi_manager.temp_points):
+                
+                # Preview polygone
+                points = self.roi_manager.temp_points + [self.roi_preview_pos]
+                if len(points) >= 2:
+                    points_array = np.array(points, dtype=np.int32)
+                    cv2.polylines(frame, [points_array], False, preview_color, 2)
+                    
+                # Points de contrôle
+                for i, point in enumerate(self.roi_manager.temp_points):
+                    cv2.circle(frame, point, 4, preview_color, -1)
+                    cv2.putText(frame, str(i), 
+                            (point[0] + 5, point[1] - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, preview_color, 1)
+            
+            return frame
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur dessin preview ROI: {e}")
+            return frame
+        
+    def _update_display_frame(self, frame):
+        """Met à jour l'affichage avec la frame traitée"""
+        try:
+            # Conversion BGR vers RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Création QImage
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            
+            # Redimensionnement avec conservation aspect ratio
+            display_size = self.camera_display.size()
+            scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
+                display_size, Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            # Mise à jour affichage
+            self.camera_display.setPixmap(scaled_pixmap)
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur mise à jour affichage: {e}")
     
     # === NETTOYAGE ===
     
