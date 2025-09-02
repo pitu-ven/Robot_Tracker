@@ -1,10 +1,11 @@
 # core/roi_manager.py
-# Version 1.0 - Création gestionnaire ROI interactives
-# Modification: Implémentation gestion rectangles/polygones avec sérialisation JSON
+# Version 1.2 - Version complète corrigée avec debug
+# Modification: Intégration complète des corrections et debug détaillé
 
 import json
 import numpy as np
 import cv2
+import time
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -68,58 +69,116 @@ class ROIManager:
         self.max_roi_count = self.roi_config.get('max_roi_count', 10)
         
         logger.info("ROIManager initialisé")
+
+    def _convert_roi_type_from_string(self, roi_type_str: str) -> Optional[ROIType]:
+        """Convertit une chaîne en ROIType enum avec gestion d'erreurs"""
+        if not isinstance(roi_type_str, str):
+            logger.error(f"❌ _convert_roi_type_from_string: Paramètre n'est pas string: {type(roi_type_str)}")
+            return None
+            
+        mapping = {
+            'rectangle': ROIType.RECTANGLE,
+            'polygon': ROIType.POLYGON,
+            'circle': ROIType.CIRCLE,
+            # Ajout variantes possibles
+            'rect': ROIType.RECTANGLE,
+            'poly': ROIType.POLYGON,
+            'octagon': ROIType.POLYGON,  # Si utilisé ailleurs
+        }
+        
+        key = roi_type_str.lower().strip()
+        result = mapping.get(key)
+        
+        if result is None:
+            logger.error(f"❌ Type ROI non reconnu: '{roi_type_str}' - Types supportés: {list(mapping.keys())}")
+            
+        return result
     
     def start_roi_creation(self, roi_type) -> bool:
         """Démarre la création d'une nouvelle ROI"""
+        logger.info(f"🔍 DEBUG ROIManager: Demande création type='{roi_type}' (type Python: {type(roi_type)})")
+        
         if len(self.rois) >= self.max_roi_count:
             logger.warning(f"Limite de {self.max_roi_count} ROI atteinte")
             return False
             
         if self.is_creating:
+            logger.info("🔍 DEBUG: Annulation création précédente en cours")
             self.cancel_roi_creation()
         
-        # Support string et enum
+        # Support string et enum avec debug détaillé
+        original_roi_type = roi_type
         if isinstance(roi_type, str):
+            logger.info(f"🔍 DEBUG: Conversion string '{roi_type}' vers enum")
             roi_type = self._convert_roi_type_from_string(roi_type)
-        elif not isinstance(roi_type, ROIType):
-            logger.error(f"Type ROI invalide: {type(roi_type)}")
+            logger.info(f"🔍 DEBUG: Résultat conversion: {roi_type}")
+        elif isinstance(roi_type, ROIType):
+            logger.info(f"🔍 DEBUG: Type déjà enum ROIType: {roi_type}")
+        else:
+            logger.error(f"❌ Type ROI invalide: {type(roi_type)} - Valeur: {roi_type}")
             return False
             
+        if roi_type is None:
+            logger.error(f"❌ Conversion ROI échouée pour: '{original_roi_type}'")
+            return False
+            
+        # Mise à jour état
         self.is_creating = True
         self.creation_type = roi_type
         self.temp_points = []
         
-        logger.info(f"Création ROI {roi_type.value} démarrée")
+        logger.info(f"✅ Création ROI {roi_type.value} démarrée (is_creating={self.is_creating})")
         return True
     
     def add_creation_point(self, point: Tuple[int, int]) -> bool:
-        """Ajoute un point lors de la création"""
+        """Ajoute un point lors de la création avec debug"""
+        logger.info(f"🔍 DEBUG: add_creation_point appelée - is_creating={self.is_creating}, point={point}")
+        
         if not self.is_creating:
+            logger.warning("⚠️ add_creation_point: Mode création non actif")
             return False
             
-        snapped_point = self._snap_to_grid(point)
-        
-        if self.creation_type == ROIType.RECTANGLE:
-            if len(self.temp_points) == 0:
-                self.temp_points.append(snapped_point)
-            elif len(self.temp_points) == 1:
-                # Completion rectangle avec deux points diagonaux
-                self.temp_points.append(snapped_point)
-                self._complete_rectangle_creation()
-                return True
-                
-        elif self.creation_type == ROIType.POLYGON:
-            self.temp_points.append(snapped_point)
+        if not isinstance(point, tuple) or len(point) != 2:
+            logger.error(f"❌ Point invalide: {point} (type: {type(point)})")
+            return False
             
-        elif self.creation_type == ROIType.CIRCLE:
-            if len(self.temp_points) == 0:
-                self.temp_points.append(snapped_point)  # Centre
-            elif len(self.temp_points) == 1:
-                self.temp_points.append(snapped_point)  # Point sur le cercle
-                self._complete_circle_creation()
-                return True
+        try:
+            snapped_point = self._snap_to_grid(point)
+            logger.info(f"🔍 DEBUG: Point snappé: {point} -> {snapped_point}")
+            
+            if self.creation_type == ROIType.RECTANGLE:
+                if len(self.temp_points) == 0:
+                    self.temp_points.append(snapped_point)
+                    logger.info(f"🔍 DEBUG: Premier point rectangle ajouté: {snapped_point}")
+                    return False  # Continuer
+                elif len(self.temp_points) == 1:
+                    # Completion rectangle avec deux points diagonaux
+                    self.temp_points.append(snapped_point)
+                    logger.info(f"🔍 DEBUG: Second point rectangle, finalisation: {snapped_point}")
+                    self._complete_rectangle_creation()
+                    return True  # ROI terminée
+                    
+            elif self.creation_type == ROIType.POLYGON:
+                self.temp_points.append(snapped_point)
+                logger.info(f"🔍 DEBUG: Point polygone ajouté: {snapped_point} (total: {len(self.temp_points)})")
+                return False  # Continuer
                 
-        return False
+            elif self.creation_type == ROIType.CIRCLE:
+                if len(self.temp_points) == 0:
+                    self.temp_points.append(snapped_point)  # Centre
+                    logger.info(f"🔍 DEBUG: Centre cercle défini: {snapped_point}")
+                    return False  # Continuer
+                elif len(self.temp_points) == 1:
+                    self.temp_points.append(snapped_point)  # Point sur le cercle
+                    logger.info(f"🔍 DEBUG: Rayon cercle défini: {snapped_point}")
+                    self._complete_circle_creation()
+                    return True  # ROI terminée
+                    
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur add_creation_point: {e}")
+            return False
     
     def complete_polygon_creation(self) -> bool:
         """Termine la création d'un polygone"""
@@ -140,18 +199,30 @@ class ROIManager:
         logger.info("Création ROI annulée")
     
     def _complete_rectangle_creation(self):
-        """Termine la création d'un rectangle"""
-        if len(self.temp_points) == 2:
+        """Termine la création d'un rectangle avec debug"""
+        logger.info(f"🔍 DEBUG: _complete_rectangle_creation - temp_points={self.temp_points}")
+        
+        if len(self.temp_points) != 2:
+            logger.error(f"❌ Rectangle: Nombre de points invalide: {len(self.temp_points)}")
+            return
+            
+        try:
             # Conversion en 4 points rectangle
             p1, p2 = self.temp_points
             rect_points = [
-                p1,
-                (p2[0], p1[1]),
-                p2,
-                (p1[0], p2[1])
+                (min(p1[0], p2[0]), min(p1[1], p2[1])),  # Top-left
+                (max(p1[0], p2[0]), min(p1[1], p2[1])),  # Top-right
+                (max(p1[0], p2[0]), max(p1[1], p2[1])),  # Bottom-right
+                (min(p1[0], p2[0]), max(p1[1], p2[1]))   # Bottom-left
             ]
+            
             self.temp_points = rect_points
+            logger.info(f"🔍 DEBUG: Rectangle converti en 4 points: {rect_points}")
+            
             self._create_roi_from_temp_points()
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur completion rectangle: {e}")
     
     def _complete_circle_creation(self):
         """Termine la création d'un cercle"""
@@ -172,35 +243,89 @@ class ROIManager:
             self._create_roi_from_temp_points()
     
     def _create_roi_from_temp_points(self):
-        """Crée une ROI depuis les points temporaires"""
-        roi_name = f"ROI_{self.next_roi_id}"
+        """Crée une ROI depuis les points temporaires avec debug"""
+        logger.info(f"🔍 DEBUG: _create_roi_from_temp_points - {len(self.temp_points)} points")
         
-        # Couleur par défaut selon le type
-        color_key = f"roi_{self.creation_type.value}"
-        default_color = self.colors.get('roi_active', [255, 255, 0])
-        roi_color = tuple(self.colors.get(color_key, default_color))
+        if not self.temp_points:
+            logger.error("❌ Aucun point temporaire pour créer ROI")
+            return
+            
+        try:
+            roi_name = f"ROI_{self.next_roi_id}"
+            
+            # Couleur par défaut selon le type
+            color_key = f"roi_{self.creation_type.value}"
+            default_color = [255, 255, 0]  # Jaune par défaut
+            roi_color = tuple(self.colors.get(color_key, default_color))
+            
+            roi = ROI(
+                id=self.next_roi_id,
+                name=roi_name,
+                roi_type=self.creation_type,
+                points=self.temp_points.copy(),
+                color=roi_color,
+                thickness=self.default_thickness,
+                metadata={
+                    'created_at': time.time(),
+                    'area': self._calculate_area(self.temp_points)
+                }
+            )
+            
+            self.rois.append(roi)
+            logger.info(f"✅ ROI créée: {roi.name} (type={roi.roi_type.value}, points={len(roi.points)})")
+            
+            self.next_roi_id += 1
+            
+            # Nettoyage
+            self.is_creating = False
+            self.temp_points = []
+            
+            logger.info(f"🔍 DEBUG: État après création: is_creating={self.is_creating}, total_rois={len(self.rois)}")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur création ROI: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def _snap_to_grid(self, point: Tuple[int, int], grid_size: int = 1) -> Tuple[int, int]:
+        """Aligne un point sur une grille virtuelle (désactivé par défaut)"""
+        if self.snap_distance <= 0 or grid_size <= 1:
+            return point
+            
+        x, y = point
+        snapped_x = round(x / grid_size) * grid_size
+        snapped_y = round(y / grid_size) * grid_size
         
-        roi = ROI(
-            id=self.next_roi_id,
-            name=roi_name,
-            roi_type=self.creation_type,
-            points=self.temp_points.copy(),
-            color=roi_color,
-            thickness=self.default_thickness,
-            metadata={
-                'created_at': time.time(),
-                'area': self._calculate_area(self.temp_points)
-            }
-        )
+        return (snapped_x, snapped_y)
+    
+    def _calculate_area(self, points: List[Tuple[int, int]]) -> float:
+        """Calcule l'aire d'un polygone"""
+        if len(points) < 3:
+            return 0.0
+            
+        try:
+            points_array = np.array(points, dtype=np.float32)
+            area = cv2.contourArea(points_array)
+            return abs(area)
+        except:
+            return 0.0
+    
+    def _deselect_all(self):
+        """Désélectionne toutes les ROI"""
+        for roi in self.rois:
+            if roi.state == ROIState.SELECTED:
+                roi.state = ROIState.ACTIVE
+        self.selected_roi_id = None
+    
+    def _draw_selection_handles(self, frame: np.ndarray, roi: ROI):
+        """Dessine les poignées de sélection d'une ROI"""
+        handle_color = (255, 255, 255)  # Blanc
+        handle_border = (0, 0, 0)       # Noir
         
-        self.rois.append(roi)
-        self.next_roi_id += 1
-        
-        # Nettoyage
-        self.is_creating = False
-        self.temp_points = []
-        
-        logger.info(f"ROI {roi.name} créée ({roi.roi_type.value})")
+        for point in roi.points:
+            # Poignée avec bordure
+            cv2.circle(frame, point, self.handle_size, handle_border, -1)
+            cv2.circle(frame, point, self.handle_size - 1, handle_color, -1)
     
     def select_roi(self, point: Tuple[int, int]) -> Optional[int]:
         """Sélectionne la ROI contenant le point"""
@@ -337,47 +462,6 @@ class ROIManager:
             # Preview centre cercle
             cv2.circle(frame, self.temp_points[0], 3, preview_color, -1)
     
-    def _draw_selection_handles(self, frame: np.ndarray, roi: ROI):
-        """Dessine les poignées de sélection d'une ROI"""
-        handle_color = (255, 255, 255)  # Blanc
-        handle_border = (0, 0, 0)       # Noir
-        
-        for point in roi.points:
-            # Poignée avec bordure
-            cv2.circle(frame, point, self.handle_size, handle_border, -1)
-            cv2.circle(frame, point, self.handle_size - 1, handle_color, -1)
-
-    
-    def _snap_to_grid(self, point: Tuple[int, int], grid_size: int = 5) -> Tuple[int, int]:
-        """Aligne un point sur une grille virtuelle"""
-        if self.snap_distance <= 0:
-            return point
-            
-        x, y = point
-        snapped_x = round(x / grid_size) * grid_size
-        snapped_y = round(y / grid_size) * grid_size
-        
-        return (snapped_x, snapped_y)
-    
-    def _calculate_area(self, points: List[Tuple[int, int]]) -> float:
-        """Calcule l'aire d'un polygone"""
-        if len(points) < 3:
-            return 0.0
-            
-        try:
-            points_array = np.array(points, dtype=np.float32)
-            area = cv2.contourArea(points_array)
-            return abs(area)
-        except:
-            return 0.0
-    
-    def _deselect_all(self):
-        """Désélectionne toutes les ROI"""
-        for roi in self.rois:
-            if roi.state == ROIState.SELECTED:
-                roi.state = ROIState.ACTIVE
-        self.selected_roi_id = None
-    
     def save_rois_to_file(self, file_path: str) -> bool:
         """Sauvegarde les ROI dans un fichier JSON"""
         try:
@@ -450,14 +534,3 @@ class ROIManager:
                 for roi_type in ROIType
             }
         }
-    
-    def _convert_roi_type_from_string(self, roi_type_str: str) -> ROIType:
-        """Convertit une chaîne en ROIType enum"""
-        mapping = {
-            'rectangle': ROIType.RECTANGLE,
-            'polygon': ROIType.POLYGON,
-            'circle': ROIType.CIRCLE
-        }
-        return mapping.get(roi_type_str.lower(), ROIType.RECTANGLE)
-
-import time
