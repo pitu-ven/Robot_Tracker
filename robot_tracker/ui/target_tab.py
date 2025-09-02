@@ -1,6 +1,10 @@
-# ui/target_tab.py
-# Version 2.2 - Correction appel méthode detect_all_targets
-# Modification: Utilisation de detect_all_targets au lieu de detect
+# robot_tracker/ui/target_tab.py
+# Version 2.3 - Correction erreurs get_latest_frame + gestion ROI améliorée
+# Modifications:
+# - Remplacement get_latest_frame() par get_camera_frame(alias)
+# - Correction _process_current_frame() pour initialiser current_frame_size
+# - Suppression méthode _process_frame() redondante
+# - Amélioration gestion signaux streaming
 
 import cv2
 import numpy as np
@@ -474,58 +478,56 @@ class TargetTab(QWidget):
     # === SLOTS POUR SIGNAUX CAMERA_TAB ===
     
     def _on_camera_changed(self, camera_alias: str):
-        """Slot appelé quand la caméra sélectionnée change"""
-        logger.info(f"📷 Signal caméra changée reçu: {camera_alias}")
-        
-        # Vérifier si la caméra est bien active
-        if not self.camera_manager.is_camera_open(camera_alias):
-            logger.warning(f"⚠️ Caméra {camera_alias} non disponible")
-            self.camera_ready = False
-            self.selected_camera_alias = None
-            self._update_camera_status()
-            return
-        
-        # Arrêt du tracking si actif
-        if self.is_tracking:
-            self._stop_tracking()
-        
-        # Mise à jour caméra sélectionnée
-        self.selected_camera_alias = camera_alias
-        self.camera_ready = True
-        self._update_camera_status()
-        
-        logger.info(f"✅ Caméra {camera_alias} sélectionnée pour détection")
-    
-    def _check_camera_status(self):
-        """Vérifie automatiquement l'état des caméras actives"""
+        """Gestionnaire changement de caméra depuis camera_tab"""
         try:
-            # Utilisation de la propriété active_cameras au lieu de get_active_cameras()
-            active_cameras = self.camera_manager.active_cameras
+            logger.info(f"🎥 Changement caméra reçu: {camera_alias}")
             
-            if not active_cameras:
-                # Aucune caméra active
-                if self.camera_ready:
-                    logger.info("📷 Plus de caméras actives détectées")
-                    if self.is_tracking:
-                        self._stop_tracking()
-                    self.camera_ready = False
-                    self.selected_camera_alias = None
-            else:
-                # Au moins une caméra active
-                if not self.camera_ready or self.selected_camera_alias not in active_cameras:
-                    # Auto-sélection de la première caméra disponible
-                    first_camera = active_cameras[0]
-                    logger.info(f"📷 Auto-sélection caméra: {first_camera}")
-                    self.selected_camera_alias = first_camera
-                    self.camera_ready = True
+            # Validation
+            if not self.camera_manager.is_camera_open(camera_alias):
+                logger.warning(f"⚠️ Caméra {camera_alias} non disponible")
+                self.camera_ready = False
+                self.selected_camera_alias = None
+                return
             
+            # Arrêter tracking si en cours
+            if self.is_tracking:
+                self._stop_tracking()
+            
+            # Configuration nouvelle caméra
+            self.selected_camera_alias = camera_alias
+            self.camera_ready = True
+            self.current_frame_size = None  # Reset pour recalcul
+            
+            logger.info(f"✅ Caméra configurée: {camera_alias}")
             self._update_camera_status()
             
         except Exception as e:
-            logger.error(f"❌ Erreur vérification caméras: {e}")
+            logger.error(f"❌ Erreur changement caméra: {e}")
             self.camera_ready = False
-            self.selected_camera_alias = None
+        
+    def _check_camera_status(self):
+        """Vérifie l'état des caméras disponibles"""
+        try:
+            # Vérification état caméra via le manager
+            if (self.camera_manager and 
+                hasattr(self, 'selected_camera_alias') and 
+                self.selected_camera_alias):
+                
+                # Vérifier si la caméra est toujours ouverte
+                if self.camera_manager.is_camera_open(self.selected_camera_alias):
+                    if not self.camera_ready:
+                        self.camera_ready = True
+                        logger.info(f"✅ Caméra {self.selected_camera_alias} détectée comme active")
+                else:
+                    if self.camera_ready:
+                        self.camera_ready = False
+                        logger.warning(f"⚠️ Caméra {self.selected_camera_alias} n'est plus active")
+            
+            # Mise à jour affichage du statut
             self._update_camera_status()
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur vérification statut caméra: {e}")
     
     def _update_camera_status(self):
         """Met à jour l'affichage du statut caméra"""
@@ -536,7 +538,8 @@ class TargetTab(QWidget):
             self.camera_alias_label.setStyleSheet("QLabel { color: black; }")
             
             # Activation des boutons
-            self.start_tracking_btn.setEnabled(not self.is_tracking)
+            if hasattr(self, 'start_tracking_btn'):
+                self.start_tracking_btn.setEnabled(not self.is_tracking)
         else:
             self.camera_status_label.setText("❌ Aucune caméra active")
             self.camera_status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
@@ -544,76 +547,211 @@ class TargetTab(QWidget):
             self.camera_alias_label.setStyleSheet("QLabel { color: gray; }")
             
             # Désactivation des boutons
-            self.start_tracking_btn.setEnabled(False)
+            if hasattr(self, 'start_tracking_btn'):
+                self.start_tracking_btn.setEnabled(False)
             if self.is_tracking:
                 self._stop_tracking()
     
     def _on_streaming_started(self):
-        """Slot appelé quand le streaming démarre"""
-        logger.info("🎬 Signal streaming démarré reçu")
-        
-        # Démarrer le traitement des frames si caméra prête
-        if self.camera_ready and self.selected_camera_alias:
-            fps_target = self.fps_spin.value()
-            interval_ms = int(1000 / fps_target)
-            self.processing_timer.start(interval_ms)
-            logger.info(f"🎬 Traitement frames démarré à {fps_target}fps")
+        """Gestionnaire démarrage streaming depuis camera_tab"""
+        try:
+            self.streaming_active = True
+            logger.info("🎬 Streaming activé - Démarrage traitement frames")
+            
+            # Démarrer le timer de traitement des frames
+            if not self.processing_timer.isActive():
+                target_fps = self.fps_spin.value() if hasattr(self, 'fps_spin') else 30
+                interval_ms = int(1000 / target_fps)
+                self.processing_timer.start(interval_ms)
+                logger.info(f"⏰ Timer processing démarré à {target_fps} FPS")
+            
+            # Vérifier que la caméra est prête
+            self._check_camera_status()
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur activation streaming: {e}")
     
     def _on_streaming_stopped(self):
-        """Slot appelé quand le streaming s'arrête"""
-        logger.info("⏹️ Signal streaming arrêté reçu")
-        
-        # Arrêt du processing
-        self.processing_timer.stop()
-        if self.is_tracking:
-            self._stop_tracking()
-        
-        # Reset affichage
-        self.camera_display.setText("En attente du flux caméra...")
-        
-        # Force une vérification de l'état
-        self._check_camera_status()
+        """Gestionnaire arrêt streaming depuis camera_tab"""
+        try:
+            self.streaming_active = False
+            logger.info("⏹️ Streaming désactivé")
+            
+            # Arrêter le timer de traitement
+            if self.processing_timer.isActive():
+                self.processing_timer.stop()
+                logger.info("⏰ Timer processing arrêté")
+            
+            # Arrêter le tracking si actif
+            if self.is_tracking:
+                self._stop_tracking()
+            
+            # Réinitialiser état caméra
+            self.camera_ready = False
+            self.current_frame_size = None
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur désactivation streaming: {e}")
     
     # === MÉTHODES DE TRAITEMENT ===
     
     def _process_current_frame(self):
-        """Traite la frame courante avec optimisations performance"""
-        if not self.camera_ready or not self.selected_camera_alias:
+        """Traitement des frames avec détection et rendu ROI - VERSION CORRIGÉE"""
+        if not self.camera_manager or not self.camera_ready or not self.selected_camera_alias:
             return
-        
-        start_time = time.time()
-        
+            
         try:
-            # Récupération frame avec timeout
+            # CORRECTION: Utiliser get_camera_frame avec l'alias de caméra
             success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
             
-            if success and frame is not None:
-                self.current_frame = frame.copy()
-                self.current_depth_frame = depth_frame
+            if not success or frame is None:
+                return
                 
-                # Traitement de détection SEULEMENT si tracking actif
-                if self.is_tracking:
-                    # Skip detection si frame précédente pas encore traitée
-                    if not hasattr(self, '_processing_detection') or not self._processing_detection:
-                        self._detect_targets_in_frame()
+            # === CORRECTION CRITIQUE: Sauvegarde taille pour conversion coordonnées ===
+            self.current_frame_size = (frame.shape[1], frame.shape[0])  # (width, height)
+            self.current_frame = frame.copy()
+            
+            # Copie pour traitement
+            display_frame = frame.copy()
+            
+            # Détection si activée
+            if self.is_tracking and self.target_detector:
+                # Détecter les cibles
+                self._detect_targets_in_frame()
                 
-                # Affichage avec overlays
-                self._update_display()
-                
-                # Mesure performance réelle
-                processing_time = (time.time() - start_time) * 1000  # ms
-                if processing_time > 33:  # Plus de 33ms
-                    logger.debug(f"⚠️ Frame lente: {processing_time:.1f}ms")
-                    
-            else:
-                if not self.camera_manager.is_camera_open(self.selected_camera_alias):
-                    logger.warning(f"⚠️ Caméra {self.selected_camera_alias} non disponible")
-                    self._check_camera_status()
+                # Rendu des détections sur la frame d'affichage
+                display_frame = self._draw_detections(display_frame)
+            
+            # Rendu des ROI existantes
+            if hasattr(self, 'roi_manager') and self.roi_manager.rois:
+                display_frame = self._draw_existing_rois(display_frame)
+            
+            # Rendu preview ROI en cours de création
+            if (hasattr(self, 'roi_manager') and 
+                self.roi_manager.is_creating and 
+                hasattr(self, 'roi_preview_pos') and 
+                self.roi_preview_pos is not None):
+                display_frame = self._draw_roi_creation_preview(display_frame)
+            
+            # Mise à jour affichage
+            self._update_display_frame(display_frame)
             
         except Exception as e:
             logger.error(f"❌ Erreur traitement frame: {e}")
-            self._check_camera_status()
-    
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+    def _draw_detections(self, frame):
+        """Dessine les détections sur la frame"""
+        try:
+            if not self.detected_targets:
+                return frame
+            
+            for detection in self.detected_targets:
+                if 'bbox' in detection:
+                    # Dessiner bounding box
+                    bbox = detection['bbox']
+                    x1, y1, x2, y2 = map(int, bbox)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    
+                    # Label avec confiance
+                    label = f"{detection.get('type', 'Target')} {detection.get('confidence', 0.0):.2f}"
+                    cv2.putText(frame, label, (x1, y1-10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                if 'center' in detection:
+                    # Dessiner centre
+                    center = tuple(map(int, detection['center']))
+                    cv2.circle(frame, center, 5, (255, 0, 0), -1)
+            
+            return frame
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur dessin détections: {e}")
+            return frame
+
+    def _draw_existing_rois(self, frame):
+        """Dessine les ROI existantes sur la frame"""
+        try:
+            if not hasattr(self, 'roi_manager') or not self.roi_manager.rois:
+                return frame
+                
+            for roi_id, roi_data in self.roi_manager.rois.items():
+                color = (0, 255, 255)  # Jaune pour ROI existantes
+                
+                if roi_data['type'] == 'rectangle':
+                    points = roi_data['points']
+                    if len(points) >= 2:
+                        cv2.rectangle(frame, points[0], points[1], color, 2)
+                        
+                elif roi_data['type'] == 'circle':
+                    if 'center' in roi_data and 'radius' in roi_data:
+                        center = roi_data['center']
+                        radius = roi_data['radius']
+                        cv2.circle(frame, center, radius, color, 2)
+                        
+                elif roi_data['type'] == 'polygon':
+                    points = roi_data['points']
+                    if len(points) > 2:
+                        pts = np.array(points, np.int32)
+                        cv2.polylines(frame, [pts], True, color, 2)
+                
+                # Label ROI
+                if roi_data.get('points'):
+                    first_point = roi_data['points'][0]
+                    cv2.putText(frame, f"ROI_{roi_id}", 
+                            (first_point[0], first_point[1]-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            return frame
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur dessin ROI existantes: {e}")
+            return frame
+        
+    def _draw_roi_creation_preview(self, frame):
+        """Dessine la preview de ROI en cours de création"""
+        try:
+            if not hasattr(self, 'roi_manager') or not self.roi_manager.is_creating:
+                return frame
+            
+            preview_color = (255, 0, 255)  # Magenta pour preview
+            
+            if self.roi_manager.temp_points:
+                if self.roi_manager.creation_type.value == 'rectangle' and len(self.roi_manager.temp_points) == 1:
+                    # Preview rectangle
+                    if hasattr(self, 'roi_preview_pos') and self.roi_preview_pos:
+                        start_point = self.roi_manager.temp_points[0]
+                        end_point = self.roi_preview_pos
+                        cv2.rectangle(frame, start_point, end_point, preview_color, 2)
+                        
+                elif self.roi_manager.creation_type.value == 'circle' and len(self.roi_manager.temp_points) == 1:
+                    # Preview cercle
+                    if hasattr(self, 'roi_preview_pos') and self.roi_preview_pos:
+                        center = self.roi_manager.temp_points[0]
+                        current_pos = self.roi_preview_pos
+                        radius = int(((center[0] - current_pos[0])**2 + (center[1] - current_pos[1])**2)**0.5)
+                        cv2.circle(frame, center, radius, preview_color, 2)
+                        
+                elif self.roi_manager.creation_type.value == 'polygon':
+                    # Preview polygone
+                    if len(self.roi_manager.temp_points) > 1:
+                        pts = np.array(self.roi_manager.temp_points, np.int32)
+                        cv2.polylines(frame, [pts], False, preview_color, 2)
+                    
+                    # Points de contrôle
+                    for i, point in enumerate(self.roi_manager.temp_points):
+                        cv2.circle(frame, point, 4, preview_color, -1)
+                        cv2.putText(frame, str(i), 
+                                (point[0] + 5, point[1] - 5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, preview_color, 1)
+            
+            return frame
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur dessin preview ROI: {e}")
+            return frame
+
     def _detect_targets_in_frame(self):
         """Effectue la détection des cibles dans la frame courante"""
         if self.current_frame is None:
@@ -1277,15 +1415,24 @@ class TargetTab(QWidget):
         """Initialise une taille de frame par défaut si nécessaire"""
         try:
             if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
+                # Tentative récupération depuis la caméra active
+                if (hasattr(self, 'camera_manager') and 
+                    self.camera_manager and 
+                    self.selected_camera_alias):
+                    
+                    try:
+                        success, frame, _ = self.camera_manager.get_camera_frame(self.selected_camera_alias)
+                        if success and frame is not None:
+                            self.current_frame_size = (frame.shape[1], frame.shape[0])
+                            logger.info(f"✅ Taille frame récupérée: {self.current_frame_size}")
+                            return
+                    except Exception as e:
+                        logger.warning(f"⚠️ Impossible de récupérer frame: {e}")
+                
                 # Valeurs par défaut basées sur la configuration caméra courante
                 default_width = 640
                 default_height = 480
                 
-                # Tentative récupération depuis la configuration
-                if hasattr(self, 'camera_manager') and self.camera_manager:
-                    # Ici, vous pourriez récupérer la résolution depuis la config caméra
-                    pass
-                    
                 self.current_frame_size = (default_width, default_height)
                 logger.info(f"🔍 DEBUG: Taille frame initialisée par défaut: {self.current_frame_size}")
                 
@@ -1326,17 +1473,18 @@ class TargetTab(QWidget):
                 logger.warning("⚠️ Impossible de finaliser le polygone")
 
     def _screen_to_image_coords(self, screen_pos):
-        """Convertit coordonnées écran vers coordonnées image - VERSION ROBUSTE"""
+        """Convertit coordonnées écran vers coordonnées image - VERSION CORRIGÉE"""
         try:
             # === VÉRIFICATION AVEC FALLBACK ===
             if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
                 logger.warning("⚠️ current_frame_size non définie, tentative récupération depuis caméra")
                 
                 # Tentative récupération frame actuelle
-                if hasattr(self, 'camera_manager') and self.camera_manager:
+                if hasattr(self, 'camera_manager') and self.camera_manager and self.selected_camera_alias:
                     try:
-                        frame = self.camera_manager.get_latest_frame()
-                        if frame is not None:
+                        # CORRECTION: Utiliser get_camera_frame au lieu de get_latest_frame
+                        success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
+                        if success and frame is not None:
                             self.current_frame_size = (frame.shape[1], frame.shape[0])
                             logger.info(f"✅ Taille frame récupérée: {self.current_frame_size}")
                         else:
@@ -1346,7 +1494,7 @@ class TargetTab(QWidget):
                         logger.error(f"❌ Erreur récupération frame: {e}")
                         return None
                 else:
-                    logger.error("❌ camera_manager non disponible")
+                    logger.error("❌ camera_manager non disponible ou pas de caméra sélectionnée")
                     return None
                 
             # Récupérer tailles
@@ -1390,16 +1538,11 @@ class TargetTab(QWidget):
             
             logger.info(f"🔍 DEBUG: Coordonnées converties: ({screen_pos.x()}, {screen_pos.y()}) -> ({image_x}, {image_y})")
             
-            # Vérification limites avec tolérance
-            if -5 <= image_x <= img_width + 5 and -5 <= image_y <= img_height + 5:
-                # Clamping pour rester dans les limites
-                image_x = max(0, min(image_x, img_width - 1))
-                image_y = max(0, min(image_y, img_height - 1))
-                
-                logger.info(f"🔍 DEBUG: Coordonnées finales (après clamping): ({image_x}, {image_y})")
+            # Validation bornes
+            if 0 <= image_x < img_width and 0 <= image_y < img_height:
                 return (image_x, image_y)
             else:
-                logger.warning(f"⚠️ Coordonnées hors limites: ({image_x}, {image_y}) pour image {img_width}x{img_height}")
+                logger.warning(f"⚠️ Coordonnées hors limites: ({image_x}, {image_y}) dans image {img_width}x{img_height}")
                 return None
                 
         except Exception as e:
@@ -1649,7 +1792,6 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
         """Force la vérification de l'état des caméras"""
         self._check_camera_status()
 
-    def _process_frame(self):
         """Traitement des frames avec détection et rendu ROI - VERSION CORRIGÉE"""
         if not self.camera_manager or not self.streaming_active:
             return
@@ -1755,6 +1897,7 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
             
         except Exception as e:
             logger.error(f"❌ Erreur mise à jour affichage: {e}")
+
     
     # === NETTOYAGE ===
     
@@ -1762,10 +1905,10 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
         """Nettoyage lors de la fermeture"""
         try:
             # Arrêt des timers
-            if self.processing_timer.isActive():
+            if hasattr(self, 'processing_timer') and self.processing_timer.isActive():
                 self.processing_timer.stop()
             
-            if self.camera_check_timer.isActive():
+            if hasattr(self, 'camera_check_timer') and self.camera_check_timer.isActive():
                 self.camera_check_timer.stop()
             
             # Arrêt tracking si actif

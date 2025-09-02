@@ -1,6 +1,6 @@
-# ui/main_window.py
-# Version 1.6 - Correction utilisation signal camera_opened
-# Modification: Utilisation camera_opened au lieu de camera_selected
+# robot_tracker/ui/main_window.py
+# Version 1.7 - Correction définitive signaux camera_opened
+# Modification: Assurer cohérence entre signaux émis et signaux connectés
 
 from PyQt6.QtWidgets import (QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
                            QStatusBar, QMenuBar, QToolBar, QMessageBox, QApplication, 
@@ -261,7 +261,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.connection_status)
     
     def connect_inter_tab_signals(self):
-        """Connecte les signaux inter-onglets avec signaux disponibles"""
+        """Connecte les signaux inter-onglets avec vérification cohérence"""
         try:
             camera_tab = self.tabs.get('camera')
             target_tab = self.tabs.get('target')
@@ -275,16 +275,22 @@ class MainWindow(QMainWindow):
             
             # === SIGNAUX MAÎTRE (CameraTab) → ESCLAVE (TargetTab) ===
             
-            # 1. Ouverture de caméra (utilise camera_opened au lieu de camera_selected)
+            # 1. Ouverture de caméra - CORRECTION: Utiliser camera_opened
             if hasattr(camera_tab, 'camera_opened') and hasattr(target_tab, '_on_camera_changed'):
                 camera_tab.camera_opened.connect(target_tab._on_camera_changed)
                 connections_made += 1
                 logger.info("📡 Signal camera_opened → target._on_camera_changed")
             else:
-                logger.warning("⚠️ Signal camera_opened non disponible")
+                # Diagnostic détaillé des signaux disponibles
+                camera_signals = [attr for attr in dir(camera_tab) if not attr.startswith('_')]
+                target_methods = [attr for attr in dir(target_tab) if attr.startswith('_on_')]
+                
+                logger.warning(f"⚠️ Signal camera_opened non disponible")
+                logger.debug(f"Signaux camera_tab disponibles: {camera_signals}")
+                logger.debug(f"Méthodes target_tab disponibles: {target_methods}")
             
             # 2. Fermeture de caméra
-            if hasattr(camera_tab, 'camera_closed') and hasattr(target_tab, '_on_camera_changed'):
+            if hasattr(camera_tab, 'camera_closed') and hasattr(target_tab, '_check_camera_status'):
                 # Trigger aussi sur fermeture pour rafraîchir l'état
                 camera_tab.camera_closed.connect(lambda alias: target_tab._check_camera_status())
                 connections_made += 1
@@ -346,12 +352,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"❌ Erreur connexion signaux inter-onglets: {e}")
             self.connection_status.setText("Signaux: Erreur")
-            # Ne pas interrompre le démarrage pour autant
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     def _on_tracking_started(self):
         """Callback global quand le tracking démarre"""
         logger.info("🎬 Tracking global démarré")
         self.tracking_status.setText("Tracking: Actif")
+        self.tracking_status.setStyleSheet("color: green; font-weight: bold;")
         
         # Notification à tous les onglets intéressés
         for tab_name, tab in self.tabs.items():
@@ -365,6 +373,7 @@ class MainWindow(QMainWindow):
         """Callback global quand le tracking s'arrête"""
         logger.info("⏹️ Tracking global arrêté")
         self.tracking_status.setText("Tracking: Inactif")
+        self.tracking_status.setStyleSheet("color: red;")
         
         # Notification à tous les onglets intéressés
         for tab_name, tab in self.tabs.items():
@@ -377,36 +386,41 @@ class MainWindow(QMainWindow):
     def _on_tab_status_changed(self, status_info):
         """Callback pour les changements de statut des onglets"""
         try:
-            if isinstance(status_info, dict):
-                tab_name = status_info.get('tab', 'Unknown')
-                message = status_info.get('message', 'Status changed')
+            # Mise à jour des compteurs globaux
+            total_cameras = len(self.camera_manager.active_cameras) if self.camera_manager else 0
+            self.camera_status.setText(f"Caméra: {total_cameras} active(s)")
+            
+            if total_cameras > 0:
+                self.camera_status.setStyleSheet("color: green;")
+            else:
+                self.camera_status.setStyleSheet("color: red;")
                 
-                # Mise à jour ciblée selon l'onglet
-                if tab_name == 'camera':
-                    if 'active_cameras' in status_info:
-                        count = status_info['active_cameras']
-                        self.camera_status.setText(f"Caméra: {count} active(s)" if count > 0 else "Caméra: Arrêtée")
-                
-                logger.debug(f"📊 Statut {tab_name}: {message}")
         except Exception as e:
-            logger.debug(f"Erreur traitement statut: {e}")
+            logger.error(f"❌ Erreur mise à jour statut: {e}")
     
     def start_global_streaming(self):
-        """Démarre le streaming global via CameraManager"""
+        """Démarre le streaming global via tous les onglets"""
         try:
-            if self.camera_manager.start_streaming():
-                logger.info("🎬 Streaming global démarré via menu")
+            camera_tab = self.tabs.get('camera')
+            if camera_tab and hasattr(camera_tab, '_start_streaming'):
+                camera_tab._start_streaming()
+                logger.info("🎬 Streaming global démarré via toolbar")
             else:
-                QMessageBox.warning(self, "Attention", "Impossible de démarrer le streaming.\nVérifiez qu'au moins une caméra est ouverte.")
+                logger.warning("⚠️ Impossible de démarrer streaming global")
+                
         except Exception as e:
             logger.error(f"❌ Erreur démarrage streaming global: {e}")
-            QMessageBox.critical(self, "Erreur", f"Erreur streaming:\n{e}")
     
     def stop_global_streaming(self):
-        """Arrête le streaming global via CameraManager"""
+        """Arrête le streaming global via tous les onglets"""
         try:
-            self.camera_manager.stop_streaming()
-            logger.info("⏹️ Streaming global arrêté via menu")
+            camera_tab = self.tabs.get('camera')
+            if camera_tab and hasattr(camera_tab, '_stop_streaming'):
+                camera_tab._stop_streaming()
+                logger.info("⏹️ Streaming global arrêté via toolbar")
+            else:
+                logger.warning("⚠️ Impossible d'arrêter streaming global")
+                
         except Exception as e:
             logger.error(f"❌ Erreur arrêt streaming global: {e}")
     
