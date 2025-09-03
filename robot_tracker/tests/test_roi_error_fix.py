@@ -1,6 +1,6 @@
 # tests/test_roi_error_fix.py
-# Version 1.1 - Test correction erreurs ROI avec imports corrigés
-# Modification: Correction des chemins d'import pour exécution depuis robot_tracker/
+# Version 1.2 - Test correction erreurs ROI avec test Mock corrigé
+# Modification: Correction du test get_latest_frame pour utiliser la vraie classe TargetTab
 
 import sys
 import os
@@ -189,16 +189,45 @@ class TestROIErrorFix(unittest.TestCase):
     
     @unittest.skipUnless(MODULES_AVAILABLE, "Modules non disponibles")
     def test_no_get_latest_frame_method(self):
-        """Test qu'aucune méthode get_latest_frame n'existe"""
-        # Créer un mock de TargetTab
-        target_tab = Mock()
+        """Test qu'aucune méthode get_latest_frame n'existe - VERSION CORRIGÉE"""
+        # CORRECTION: Tester la vraie classe TargetTab au lieu d'un Mock
+        # Les Mocks prétendent avoir tous les attributs
         
-        # Vérifier qu'aucune méthode get_latest_frame n'existe
-        self.assertFalse(hasattr(target_tab, 'get_latest_frame'))
-        self.assertFalse(hasattr(self.camera_manager, 'get_latest_frame'))
+        # Inspecter la classe TargetTab directement
+        target_tab_methods = [method for method in dir(TargetTab) if not method.startswith('_')]
         
-        # Vérifier que get_camera_frame existe
-        self.assertTrue(hasattr(self.camera_manager, 'get_camera_frame'))
+        # Vérifier qu'aucune méthode get_latest_frame n'existe dans TargetTab
+        self.assertNotIn('get_latest_frame', target_tab_methods, 
+                        "La méthode get_latest_frame ne devrait pas exister dans TargetTab")
+        
+        # Vérifier que get_camera_frame n'existe pas dans TargetTab 
+        # (elle devrait être dans camera_manager uniquement)
+        self.assertNotIn('get_camera_frame', target_tab_methods,
+                        "La méthode get_camera_frame ne devrait pas exister dans TargetTab")
+        
+        # Vérifier que camera_manager a get_camera_frame
+        self.assertTrue(hasattr(self.camera_manager, 'get_camera_frame'),
+                       "camera_manager devrait avoir get_camera_frame")
+        
+        # Test additionnel: Créer une vraie instance et vérifier
+        if PYQT_AVAILABLE:
+            try:
+                real_target_tab = TargetTab(self.config, self.camera_manager)
+                
+                # Vérifier qu'il n'y a pas get_latest_frame dans l'instance
+                self.assertFalse(hasattr(real_target_tab, 'get_latest_frame'),
+                               "L'instance TargetTab ne devrait pas avoir get_latest_frame")
+                
+                # Vérifier que force_camera_refresh n'appelle pas get_latest_frame
+                # en inspectant le code source de la méthode
+                import inspect
+                if hasattr(real_target_tab, 'force_camera_refresh'):
+                    method_source = inspect.getsource(real_target_tab.force_camera_refresh)
+                    self.assertNotIn('get_latest_frame', method_source,
+                                   "force_camera_refresh ne devrait pas contenir get_latest_frame")
+                
+            except Exception as e:
+                print(f"⚠️ Impossible de créer instance TargetTab pour test complet: {e}")
 
 class TestROIFunctionalLogic(unittest.TestCase):
     """Tests de la logique fonctionnelle sans dépendances UI"""

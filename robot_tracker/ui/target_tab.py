@@ -694,42 +694,52 @@ class TargetTab(QWidget):
             return frame
 
     def _draw_existing_rois(self, frame):
-        """Dessine les ROI existantes sur la frame"""
+        """Dessine les ROI existantes sur la frame - VERSION CORRIGÉE"""
         try:
             if not hasattr(self, 'roi_manager') or not self.roi_manager.rois:
                 return frame
                 
-            for roi_id, roi_data in self.roi_manager.rois.items():
-                color = (0, 255, 255)  # Jaune pour ROI existantes
+            # CORRECTION: self.roi_manager.rois est une LISTE d'objets ROI, pas un dict
+            for roi in self.roi_manager.rois:
+                # Récupération des propriétés depuis l'objet ROI
+                color = roi.color if hasattr(roi, 'color') else (0, 255, 255)  # Jaune par défaut
+                thickness = roi.thickness if hasattr(roi, 'thickness') else 2
                 
-                if roi_data['type'] == 'rectangle':
-                    points = roi_data['points']
+                # Dessin selon le type de ROI
+                if roi.roi_type.value == 'rectangle':
+                    points = roi.points
                     if len(points) >= 2:
-                        cv2.rectangle(frame, points[0], points[1], color, 2)
+                        cv2.rectangle(frame, points[0], points[1], color, thickness)
                         
-                elif roi_data['type'] == 'circle':
-                    if 'center' in roi_data and 'radius' in roi_data:
-                        center = roi_data['center']
-                        radius = roi_data['radius']
-                        cv2.circle(frame, center, radius, color, 2)
+                elif roi.roi_type.value == 'circle':
+                    # Pour un cercle, on s'attend à avoir le centre et un point du cercle
+                    if len(roi.points) >= 2:
+                        center = roi.points[0]
+                        edge_point = roi.points[1]
+                        radius = int(((center[0] - edge_point[0])**2 + (center[1] - edge_point[1])**2)**0.5)
+                        cv2.circle(frame, center, radius, color, thickness)
                         
-                elif roi_data['type'] == 'polygon':
-                    points = roi_data['points']
+                elif roi.roi_type.value == 'polygon':
+                    points = roi.points
                     if len(points) > 2:
                         pts = np.array(points, np.int32)
-                        cv2.polylines(frame, [pts], True, color, 2)
+                        cv2.polylines(frame, [pts], True, color, thickness)
                 
                 # Label ROI
-                if roi_data.get('points'):
-                    first_point = roi_data['points'][0]
-                    cv2.putText(frame, f"ROI_{roi_id}", 
+                if roi.points:
+                    first_point = roi.points[0]
+                    # Utiliser le nom de la ROI (attribut 'name' de l'objet ROI)
+                    roi_name = roi.name if hasattr(roi, 'name') else f"ROI_{roi.id}"
+                    cv2.putText(frame, roi_name, 
                             (first_point[0], first_point[1]-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
             return frame
             
         except Exception as e:
             logger.error(f"❌ Erreur dessin ROI existantes: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return frame
         
     def _draw_roi_creation_preview(self, frame):
@@ -1116,11 +1126,15 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur finalisation ROI: {e}")
 
     def _update_roi_count_display(self):
-        """Met à jour l'affichage du nombre de ROI"""
+        """Met à jour l'affichage du nombre de ROI - VERSION CORRIGÉE"""
         try:
             if hasattr(self, 'roi_manager') and hasattr(self, 'roi_info_label'):
+                # CORRECTION: self.roi_manager.rois est une liste, donc len() directement
                 roi_count = len(self.roi_manager.rois)
                 self.roi_info_label.setText(f"ROI actives: {roi_count}")
+                logger.info(f"🔍 DEBUG: Compteur ROI mis à jour: {roi_count}")
+            else:
+                logger.warning("⚠️ Impossible de mettre à jour compteur ROI (attributs manquants)")
         except Exception as e:
             logger.error(f"❌ Erreur mise à jour compteur ROI: {e}")
 
@@ -1145,11 +1159,12 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur affichage message: {e}")
 
     def _clear_all_rois(self):
-        """Efface toutes les ROI"""
+        """Efface toutes les ROI - VERSION CORRIGÉE"""
         try:
             roi_count = len(self.roi_manager.rois) if hasattr(self, 'roi_manager') else 0
             
             if hasattr(self, 'roi_manager') and self.roi_manager:
+                # CORRECTION: rois est une liste, on peut la vider avec clear()
                 self.roi_manager.rois.clear()
                 if hasattr(self.roi_manager, 'selected_roi_id'):
                     self.roi_manager.selected_roi_id = None
