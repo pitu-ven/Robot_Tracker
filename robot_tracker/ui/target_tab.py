@@ -1,10 +1,9 @@
 # robot_tracker/ui/target_tab.py
-# Version 2.3 - Correction erreurs get_latest_frame + gestion ROI améliorée
+# Version 2.4 - Suppression complète des références get_latest_frame()
 # Modifications:
-# - Remplacement get_latest_frame() par get_camera_frame(alias)
-# - Correction _process_current_frame() pour initialiser current_frame_size
-# - Suppression méthode _process_frame() redondante
-# - Amélioration gestion signaux streaming
+# - Suppression du code mort dans force_camera_refresh() qui utilisait get_latest_frame()
+# - Nettoyage des méthodes redondantes et commentaires obsolètes
+# - Amélioration cohérence avec l'architecture camera_manager centralisée
 
 import cv2
 import numpy as np
@@ -34,12 +33,16 @@ except ImportError:
         def __init__(self, config): self.detected_markers = {}
         def scan_aruco_folder(self, folder_path): return {}
         def get_detector_params(self): return {}
+        def get_latest_aruco_folder(self): return None
+        def validate_markers(self): return 0, []
+        def _detect_common_dictionary(self): return "DICT_4X4_50"
     
     class TargetDetector:
         def __init__(self, config): 
             self.detection_enabled = {'aruco': True, 'reflective': True, 'led': True}
-        def detect_all_targets(self, frame): return []  # Correction ici
+        def detect_all_targets(self, frame): return []
         def set_roi(self, roi): pass
+        def set_detection_enabled(self, target_type, enabled): pass
     
     class TargetType:
         ARUCO = "aruco"
@@ -49,14 +52,20 @@ except ImportError:
     class ROIManager:
         def __init__(self, config_manager): 
             self.is_creating = False
-            self.rois = []
-        def start_roi_creation(self, roi_type): self.is_creating = True
-        def add_point(self, point): pass
-        def finish_roi(self): self.is_creating = False
+            self.rois = {}
+            self.temp_points = []
+            self.creation_type = None
+        def start_roi_creation(self, roi_type): 
+            self.is_creating = True
+            return True
+        def add_creation_point(self, point): return False
+        def cancel_roi_creation(self): self.is_creating = False
+        def complete_polygon_creation(self): return False
 
     class ROIType:
         RECTANGLE = "rectangle"
         POLYGON = "polygon"
+        CIRCLE = "circle"
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +93,18 @@ class TargetTab(QWidget):
         self.selected_camera_alias = None
         self.current_frame_size = None
         self.roi_preview_pos = None
+        self.streaming_active = False
         
-        # === VARIABLES TRACKING ===
+        # Variables tracking
         self.tracking_active = False
         self.target_detector = None
         self.detected_targets = []
         self.tracking_history = []
+        self.detection_stats = {
+            'total_detections': 0,
+            'fps': 0.0,
+            'last_detection_time': 0.0
+        }
         
         # ORDRE CORRECT :
         # 1. D'ABORD : Composants de détection
@@ -111,7 +126,7 @@ class TargetTab(QWidget):
         self.camera_check_timer.timeout.connect(self._check_camera_status)
         self.camera_check_timer.start(1000)  # Vérification chaque seconde
         
-        version = self._safe_get_config('ui', 'target_tab.version', '2.2')
+        version = self._safe_get_config('ui', 'target_tab.version', '2.4')
         logger.info(f"🎯 TargetTab v{version} initialisé (détection auto caméra)")
         
         # Vérification initiale de l'état des caméras
@@ -134,14 +149,27 @@ class TargetTab(QWidget):
     def _auto_load_latest_aruco_folder(self):
         """Charge automatiquement le dernier dossier ArUco disponible"""
         try:
+            # Vérifier que l'UI est créée
+            if not hasattr(self, 'aruco_folder_label'):
+                logger.warning("⚠️ UI pas encore créée, auto-chargement reporté")
+                return
+                
             latest_folder = self.aruco_loader.get_latest_aruco_folder()
             if latest_folder:
                 logger.info(f"🎯 Auto-chargement dossier ArUco: {latest_folder}")
                 self._scan_aruco_folder(latest_folder)
             else:
                 logger.info("ℹ️ Aucun dossier ArUco trouvé pour auto-chargement")
+                # Mise à jour de l'interface même si pas de dossier trouvé
+                if hasattr(self, 'aruco_folder_label'):
+                    self.aruco_folder_label.setText("❌ Aucun dossier ArUco trouvé")
+                    self.aruco_folder_label.setStyleSheet("QLabel { color: orange; }")
+                    
         except Exception as e:
             logger.warning(f"⚠️ Erreur auto-chargement ArUco: {e}")
+            if hasattr(self, 'aruco_folder_label'):
+                self.aruco_folder_label.setText("❌ Erreur auto-chargement")
+                self.aruco_folder_label.setStyleSheet("QLabel { color: red; }")
     
     def _safe_get_config(self, section: str, key: str, default=None):
         """Accès sécurisé à la configuration"""
@@ -239,16 +267,16 @@ class TargetTab(QWidget):
         folder_layout.addWidget(self.rescan_btn)
         layout.addLayout(folder_layout)
         
-        # Dossier sélectionné - TEXTE MODIFIÉ
+        # Dossier sélectionné
         self.aruco_folder_label = QLabel("Auto-recherche en cours...")
         self.aruco_folder_label.setStyleSheet("QLabel { color: gray; }")
         layout.addWidget(self.aruco_folder_label)
         
-        # Statistiques marqueurs - TEXTE MODIFIÉ
+        # Statistiques marqueurs
         self.aruco_stats_label = QLabel("Marqueurs: Recherche...")
         layout.addWidget(self.aruco_stats_label)
         
-        # Boutons avancés - NOUVEAUX BOUTONS
+        # Boutons avancés
         advanced_layout = QHBoxLayout()
         
         self.debug_btn = QPushButton("🔍 Debug")
@@ -299,11 +327,9 @@ class TargetTab(QWidget):
         tools_layout = QHBoxLayout()
         
         self.roi_rect_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.roi_rectangle', '⬜ Rectangle'))
-        # MODIFICATION ICI : Passer ROIType.RECTANGLE au lieu de 'rectangle'
         self.roi_rect_btn.clicked.connect(lambda: self._start_roi_creation(ROIType.RECTANGLE))
         
         self.roi_poly_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.roi_polygon', '⬟ Polygone'))
-        # MODIFICATION ICI : Passer ROIType.POLYGON au lieu de 'polygon'
         self.roi_poly_btn.clicked.connect(lambda: self._start_roi_creation(ROIType.POLYGON))
         
         self.clear_roi_btn = QPushButton(self._safe_get_config('ui', 'ui_labels.buttons.clear_roi', '🗑️ Effacer'))
@@ -393,10 +419,8 @@ class TargetTab(QWidget):
         """)
         self.camera_display.setMinimumSize(640, 480)
         
-        # NOUVEAU: Configuration pour interactions souris
-        self.camera_display.setMouseTracking(False)  # Activé seulement lors création ROI
-        self.current_frame_size = None  # Pour conversion coordonnées
-        self.roi_preview_pos = None     # Position preview souris
+        # Configuration pour interactions souris
+        self.camera_display.setMouseTracking(False)
         
         # Gestionnaire événements double-clic pour polygones
         def handle_double_click(event):
@@ -424,10 +448,10 @@ class TargetTab(QWidget):
         
         controls_layout.addStretch()
         
-        # NOUVEAU: Bouton annuler création ROI
+        # Bouton annuler création ROI
         self.cancel_roi_btn = QPushButton("❌ Annuler ROI")
         self.cancel_roi_btn.clicked.connect(self._cancel_roi_creation)
-        self.cancel_roi_btn.setVisible(False)  # Visible seulement pendant création
+        self.cancel_roi_btn.setVisible(False)
         controls_layout.addWidget(self.cancel_roi_btn)
         
         # Export données
@@ -472,7 +496,6 @@ class TargetTab(QWidget):
     
     def _connect_internal_signals(self):
         """Connecte les signaux internes de l'onglet"""
-        # TODO: Connections internes si nécessaire
         pass
     
     # === SLOTS POUR SIGNAUX CAMERA_TAB ===
@@ -596,18 +619,18 @@ class TargetTab(QWidget):
     # === MÉTHODES DE TRAITEMENT ===
     
     def _process_current_frame(self):
-        """Traitement des frames avec détection et rendu ROI - VERSION CORRIGÉE"""
+        """Traitement des frames avec détection et rendu ROI"""
         if not self.camera_manager or not self.camera_ready or not self.selected_camera_alias:
             return
             
         try:
-            # CORRECTION: Utiliser get_camera_frame avec l'alias de caméra
+            # Utiliser get_camera_frame avec l'alias de caméra
             success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
             
             if not success or frame is None:
                 return
                 
-            # === CORRECTION CRITIQUE: Sauvegarde taille pour conversion coordonnées ===
+            # Sauvegarde taille pour conversion coordonnées
             self.current_frame_size = (frame.shape[1], frame.shape[0])  # (width, height)
             self.current_frame = frame.copy()
             
@@ -764,7 +787,7 @@ class TargetTab(QWidget):
         self._processing_detection = True
 
         try:
-            # CORRECTION: Utilisation de detect_all_targets au lieu de detect
+            # Utilisation de detect_all_targets
             detected_results = self.target_detector.detect_all_targets(self.current_frame)
             
             # Conversion des résultats pour compatibilité
@@ -793,193 +816,7 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur détection: {e}")
         finally:
             self._processing_detection = False
-    
-    def _update_display(self):
-        """Met à jour l'affichage avec la frame et les overlays"""
-        if self.current_frame is None:
-            return
-        
-        try:
-            display_frame = self.current_frame.copy()
-            
-            # Ajout des overlays
-            self._draw_overlays(display_frame)
-            
-            # Conversion pour affichage Qt
-            height, width, channel = display_frame.shape
-            bytes_per_line = 3 * width
-            q_image = QImage(display_frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).rgbSwapped()
-            
-            # Application du zoom
-            zoom_factor = self.zoom_slider.value() / 100.0
-            if zoom_factor != 1.0:
-                q_image = q_image.scaled(int(width * zoom_factor), int(height * zoom_factor), 
-                                       Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            
-            pixmap = QPixmap.fromImage(q_image)
-            self.camera_display.setPixmap(pixmap)
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur affichage: {e}")
-    
-    def _draw_overlays(self, frame):
-        """Dessine les overlays sur la frame"""
-        if not hasattr(self, 'detected_targets'):
-            return
-        
-        # ROI actives
-        for roi in self.roi_manager.rois:
-            color = (0, 255, 255)  # Jaune
-            thickness = 2
-            # Dessiner selon le type de ROI (rectangle, polygone, etc.)
-            # TODO: Implémenter dessin ROI
-        
-        # Cibles détectées
-        for target in self.detected_targets:
-            try:
-                center = target.center
-                target_type = target.target_type
-                
-                if target_type == TargetType.ARUCO:
-                    # === MARQUEURS ARUCO ===
-                    
-                    # Contour du marqueur (carré)
-                    if len(target.corners) == 4:
-                        corners = np.array(target.corners, dtype=np.int32)
-                        cv2.polylines(frame, [corners], True, (0, 255, 0), 2)  # Vert
-                    
-                    # Axes 3D colorés
-                    axis_length = int(target.size * 0.4)
-                    rotation_rad = np.radians(target.rotation)
-                    
-                    # Axe X (Rouge)
-                    x_end = (
-                        int(center[0] + axis_length * np.cos(rotation_rad)),
-                        int(center[1] + axis_length * np.sin(rotation_rad))
-                    )
-                    cv2.arrowedLine(frame, center, x_end, (0, 0, 255), 3, tipLength=0.3)
-                    
-                    # Axe Y (Vert)
-                    y_end = (
-                        int(center[0] - axis_length * np.sin(rotation_rad)),
-                        int(center[1] + axis_length * np.cos(rotation_rad))
-                    )
-                    cv2.arrowedLine(frame, center, y_end, (0, 255, 0), 3, tipLength=0.3)
-                    
-                    # Axe Z (Bleu) - simulé
-                    z_offset = int(axis_length * 0.6)
-                    z_end = (center[0] - z_offset//4, center[1] - z_offset//4)
-                    cv2.arrowedLine(frame, center, z_end, (255, 0, 0), 3, tipLength=0.3)
-                    
-                    # ID du marqueur avec fond
-                    text = f"ID:{target.id}"
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.7
-                    thickness = 2
-                    
-                    # Taille du texte
-                    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                    text_x = center[0] - text_size[0] // 2
-                    text_y = center[1] - int(target.size * 0.6)
-                    
-                    # Fond blanc semi-transparent
-                    overlay = frame.copy()
-                    cv2.rectangle(overlay, 
-                                (text_x - 8, text_y - text_size[1] - 5),
-                                (text_x + text_size[0] + 8, text_y + 8),
-                                (255, 255, 255), -1)
-                    cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-                    
-                    # Texte noir
-                    cv2.putText(frame, text, (text_x, text_y), 
-                            font, font_scale, (0, 0, 0), thickness)
-                    
-                    # Cercle central
-                    cv2.circle(frame, center, 4, (255, 255, 255), -1)
-                    cv2.circle(frame, center, 4, (0, 0, 0), 1)
-                    
-                elif target_type == TargetType.REFLECTIVE:
-                    # === MARQUEURS RÉFLÉCHISSANTS ===
-                    
-                    # Cercle principal
-                    radius = int(target.size / 2)
-                    cv2.circle(frame, center, radius, (0, 0, 255), 2)  # Rouge
-                    
-                    # Cercle interne
-                    cv2.circle(frame, center, radius//2, (0, 0, 255), 1)
-                    
-                    # Point central
-                    cv2.circle(frame, center, 3, (0, 0, 255), -1)
-                    
-                    # Croix de visée
-                    cross_size = radius + 10
-                    cv2.line(frame, 
-                            (center[0] - cross_size, center[1]), 
-                            (center[0] + cross_size, center[1]), 
-                            (0, 0, 255), 1)
-                    cv2.line(frame, 
-                            (center[0], center[1] - cross_size), 
-                            (center[0], center[1] + cross_size), 
-                            (0, 0, 255), 1)
-                    
-                    # Étiquette
-                    text = f"REF:{target.id}"
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.5
-                    cv2.putText(frame, text, 
-                            (center[0] - 30, center[1] - radius - 10), 
-                            font, font_scale, (0, 0, 255), 1)
-                    
-                elif target_type == TargetType.LED:
-                    # === MARQUEURS LED ===
-                    
-                    # Couleur selon les données additionnelles
-                    led_color = (0, 255, 255)  # Cyan par défaut
-                    if target.additional_data and 'color' in target.additional_data:
-                        color_name = target.additional_data['color']
-                        color_map = {
-                            'red': (0, 0, 255),
-                            'green': (0, 255, 0), 
-                            'blue': (255, 0, 0),
-                            'yellow': (0, 255, 255),
-                            'cyan': (255, 255, 0),
-                            'magenta': (255, 0, 255)
-                        }
-                        led_color = color_map.get(color_name, (0, 255, 255))
-                    
-                    # Cercle LED avec effet de halo
-                    radius = int(target.size / 2)
-                    
-                    # Halo externe
-                    cv2.circle(frame, center, radius + 8, led_color, 1)
-                    cv2.circle(frame, center, radius + 4, led_color, 1)
-                    
-                    # Cercle principal
-                    cv2.circle(frame, center, radius, led_color, 2)
-                    
-                    # Centre brillant
-                    cv2.circle(frame, center, 2, (255, 255, 255), -1)
-                    
-                    # Étiquette colorée
-                    text = f"LED:{target.id}"
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.5
-                    
-                    # Fond coloré pour l'étiquette
-                    text_size = cv2.getTextSize(text, font, font_scale, 1)[0]
-                    label_pos = (center[0] - text_size[0]//2, center[1] + radius + 20)
-                    
-                    cv2.rectangle(frame,
-                                (label_pos[0] - 5, label_pos[1] - text_size[1] - 3),
-                                (label_pos[0] + text_size[0] + 5, label_pos[1] + 3),
-                                led_color, -1)
-                    
-                    cv2.putText(frame, text, label_pos,
-                            font, font_scale, (0, 0, 0), 1)
-            except Exception as e:
-                logger.debug(f"Erreur overlay cible {target.id}: {e}")
-                continue
-    
+
     # === MÉTHODES UI CALLBACKS ===
     
     def _select_aruco_folder(self):
@@ -993,49 +830,17 @@ class TargetTab(QWidget):
         
         if folder:
             self._scan_aruco_folder(folder)
-    
-    def _debug_aruco_files(self, folder_path):
-        """Debug les fichiers dans le dossier ArUco"""
-        try:
-            folder = Path(folder_path)
-            if not folder.exists():
-                logger.error(f"❌ Dossier inexistant: {folder_path}")
-                return
-            
-            logger.info(f"🔍 CONTENU du dossier {folder.name}:")
-            files = list(folder.glob("*"))
-            
-            for file in files[:10]:  # Limiter à 10 fichiers
-                if file.is_file():
-                    logger.info(f"  📄 Fichier: {file.name} ({file.suffix})")
-                else:
-                    logger.info(f"  📁 Dossier: {file.name}")
-            
-            if len(files) > 10:
-                logger.info(f"  ... et {len(files) - 10} autres éléments")
-                
-            # Fichiers images spécifiquement
-            image_files = []
-            for ext in ['.png', '.jpg', '.jpeg']:
-                image_files.extend(list(folder.glob(f"*{ext}")))
-            
-            logger.info(f"🖼️ FICHIERS IMAGES trouvés ({len(image_files)}):")
-            for img_file in image_files[:10]:
-                logger.info(f"  🖼️ {img_file.name}")
-                
-        except Exception as e:
-            logger.error(f"❌ Erreur debug fichiers: {e}")
 
     def _scan_aruco_folder(self, folder_path):
-        """Scan du dossier ArUco sélectionné - Version améliorée"""
+        """Scan du dossier ArUco sélectionné"""
         try:
             folder_path = Path(folder_path)
             logger.info(f"Scan du dossier ArUco: {folder_path}")
-            self._debug_aruco_files(folder_path)
-            # Scan avec aruco_config_loader amélioré
+            
+            # Scan avec aruco_config_loader
             detected_markers = self.aruco_loader.scan_aruco_folder(str(folder_path))
             
-            # Validation des marqueurs - NOUVELLE LIGNE
+            # Validation des marqueurs
             valid_count, issues = self.aruco_loader.validate_markers()
             
             # Mise à jour affichage
@@ -1043,27 +848,19 @@ class TargetTab(QWidget):
             self.aruco_folder_label.setStyleSheet("QLabel { color: green; }")
             
             if detected_markers:
-                # NOUVELLE SECTION: Détection automatique du dictionnaire
+                # Détection automatique du dictionnaire
                 dict_type = self.aruco_loader._detect_common_dictionary()
                 self.aruco_stats_label.setText(f"Marqueurs: {len(detected_markers)} détectés ({dict_type})")
                 
-                # NOUVELLE SECTION: Mise à jour du détecteur avec le bon dictionnaire
+                # Mise à jour du détecteur avec le bon dictionnaire
                 if hasattr(self.target_detector, 'aruco_config'):
                     self.target_detector.aruco_config['dictionary_type'] = dict_type
                     logger.info(f"🎯 Dictionnaire mis à jour: {dict_type}")
-                    # Réinitialiser le détecteur ArUco avec le bon dictionnaire
-                    self.target_detector._init_aruco_detector()
             else:
                 self.aruco_stats_label.setText("Marqueurs: 0 détecté")
                 self.aruco_stats_label.setStyleSheet("QLabel { color: orange; }")
             
-            # NOUVELLE SECTION: Affichage des problèmes de validation
-            if issues:
-                logger.warning(f"⚠️ Problèmes détectés: {'; '.join(issues[:3])}")
-                if len(issues) > 3:
-                    logger.warning(f"... et {len(issues) - 3} autres problèmes")
-            
-            # Activation boutons - LIGNE MODIFIÉE
+            # Activation boutons
             self.rescan_btn.setEnabled(True)
             self.debug_btn.setEnabled(True)
             self.config_btn.setEnabled(True)
@@ -1089,31 +886,6 @@ class TargetTab(QWidget):
         except Exception as e:
             logger.error(f"❌ Erreur re-scan ArUco: {e}")
             QMessageBox.warning(self, "Erreur", f"Erreur lors du re-scan:\n{e}")
-    
-    def _auto_load_latest_aruco_folder(self):
-        """Charge automatiquement le dernier dossier ArUco disponible"""
-        try:
-            # Vérifier que l'UI est créée
-            if not hasattr(self, 'aruco_folder_label'):
-                logger.warning("⚠️ UI pas encore créée, auto-chargement reporté")
-                return
-                
-            latest_folder = self.aruco_loader.get_latest_aruco_folder()
-            if latest_folder:
-                logger.info(f"🎯 Auto-chargement dossier ArUco: {latest_folder}")
-                self._scan_aruco_folder(latest_folder)
-            else:
-                logger.info("ℹ️ Aucun dossier ArUco trouvé pour auto-chargement")
-                # Mise à jour de l'interface même si pas de dossier trouvé
-                if hasattr(self, 'aruco_folder_label'):
-                    self.aruco_folder_label.setText("❌ Aucun dossier ArUco trouvé")
-                    self.aruco_folder_label.setStyleSheet("QLabel { color: orange; }")
-                    
-        except Exception as e:
-            logger.warning(f"⚠️ Erreur auto-chargement ArUco: {e}")
-            if hasattr(self, 'aruco_folder_label'):
-                self.aruco_folder_label.setText("❌ Erreur auto-chargement")
-                self.aruco_folder_label.setStyleSheet("QLabel { color: red; }")
 
     def _show_aruco_debug_info(self):
         """Affiche les informations de débogage ArUco"""
@@ -1134,32 +906,10 @@ class TargetTab(QWidget):
         debug_info.append(f"Marqueurs valides: {valid_count}")
         if issues:
             debug_info.append("Problèmes détectés:")
-            for issue in issues[:10]:  # Limiter à 10 problèmes
+            for issue in issues[:10]:
                 debug_info.append(f"  - {issue}")
             if len(issues) > 10:
                 debug_info.append(f"  ... et {len(issues) - 10} autres problèmes")
-        debug_info.append("")
-        
-        # Détails des marqueurs (premiers 10)
-        debug_info.append("=== DÉTAILS MARQUEURS ===")
-        markers_list = list(self.aruco_loader.detected_markers.items())[:10]
-        for marker_id, marker_info in markers_list:
-            debug_info.append(f"ID {marker_id}:")
-            debug_info.append(f"  Fichier: {marker_info.get('filename', 'N/A')}")
-            debug_info.append(f"  Taille: {marker_info.get('size_mm', 'N/A')}mm")
-            debug_info.append(f"  Dictionnaire: {marker_info.get('dictionary', 'N/A')}")
-            debug_info.append(f"  Pattern utilisé: {marker_info.get('pattern_used', 'N/A')}")
-        
-        if len(self.aruco_loader.detected_markers) > 10:
-            debug_info.append(f"... et {len(self.aruco_loader.detected_markers) - 10} autres marqueurs")
-        
-        # Configuration du détecteur
-        debug_info.append("\n=== CONFIGURATION DÉTECTEUR ===")
-        if hasattr(self.target_detector, 'aruco_config'):
-            config = self.target_detector.aruco_config
-            debug_info.append(f"API utilisée: {'Moderne' if getattr(self.target_detector, 'use_modern_api', False) else 'Classique'}")
-            debug_info.append(f"Dictionnaire config: {config.get('dictionary_type', 'N/A')}")
-            debug_info.append(f"ArUco activé: {self.target_detector.detection_enabled.get(TargetType.ARUCO, False)}")
         
         # Affichage dans une fenêtre de dialogue
         msg = QMessageBox(self)
@@ -1175,79 +925,13 @@ class TargetTab(QWidget):
             QMessageBox.information(self, "Configuration", "Détecteur ArUco non initialisé")
             return
         
-        # Récupération de la configuration actuelle
-        config = self.target_detector.aruco_config.copy()
-        detection_params = config.get('detection_params', {})
-        
-        # Création d'une fenêtre de dialogue simple pour les paramètres principaux
-        from PyQt6.QtWidgets import QDialog, QFormLayout, QDoubleSpinBox, QSpinBox
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Configuration ArUco Avancée")
-        dialog.setModal(True)
-        
-        layout = QFormLayout(dialog)
-        
-        # Paramètres principaux
-        min_perimeter = QDoubleSpinBox()
-        min_perimeter.setRange(0.001, 1.0)
-        min_perimeter.setValue(detection_params.get('minMarkerPerimeterRate', 0.03))
-        min_perimeter.setSingleStep(0.01)
-        min_perimeter.setDecimals(3)
-        layout.addRow("Min Perimeter Rate:", min_perimeter)
-        
-        max_perimeter = QDoubleSpinBox()
-        max_perimeter.setRange(1.0, 10.0)
-        max_perimeter.setValue(detection_params.get('maxMarkerPerimeterRate', 4.0))
-        max_perimeter.setSingleStep(0.5)
-        max_perimeter.setDecimals(1)
-        layout.addRow("Max Perimeter Rate:", max_perimeter)
-        
-        win_size_min = QSpinBox()
-        win_size_min.setRange(3, 50)
-        win_size_min.setValue(detection_params.get('adaptiveThreshWinSizeMin', 3))
-        layout.addRow("Window Size Min:", win_size_min)
-        
-        win_size_max = QSpinBox()
-        win_size_max.setRange(10, 100)
-        win_size_max.setValue(detection_params.get('adaptiveThreshWinSizeMax', 23))
-        layout.addRow("Window Size Max:", win_size_max)
-        
-        # Boutons
-        from PyQt6.QtWidgets import QDialogButtonBox
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addRow(buttons)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Mise à jour des paramètres
-            new_params = {
-                'minMarkerPerimeterRate': min_perimeter.value(),
-                'maxMarkerPerimeterRate': max_perimeter.value(),
-                'adaptiveThreshWinSizeMin': win_size_min.value(),
-                'adaptiveThreshWinSizeMax': win_size_max.value()
-            }
-            
-            # Mise à jour dans le détecteur
-            if hasattr(self.target_detector, 'update_detection_params'):
-                self.target_detector.update_detection_params(TargetType.ARUCO, new_params)
-                logger.info("✅ Paramètres ArUco mis à jour")
-                QMessageBox.information(self, "Configuration", "Paramètres ArUco mis à jour avec succès!")
-            else:
-                logger.warning("⚠️ Impossible de mettre à jour les paramètres")
-        
-        dialog.deleteLater()
+        QMessageBox.information(self, "Configuration ArUco", "Configuration ArUco avancée (à implémenter)")
 
     def _on_detection_type_changed(self):
         """Callback changement types de détection"""
         if hasattr(self, 'target_detector'):
-            # Mise à jour des types de détection activés
             try:
                 if hasattr(self.target_detector, 'set_detection_enabled'):
-                    from core.target_detector import TargetType
                     self.target_detector.set_detection_enabled(TargetType.ARUCO, self.aruco_check.isChecked())
                     self.target_detector.set_detection_enabled(TargetType.REFLECTIVE, self.reflective_check.isChecked())
                     self.target_detector.set_detection_enabled(TargetType.LED, self.led_check.isChecked())
@@ -1259,258 +943,117 @@ class TargetTab(QWidget):
                 logger.warning(f"⚠️ Erreur mise à jour détection: {e}")
     
     def _start_roi_creation(self, roi_type):
-        """Démarre la création d'une ROI - Support universel ROIType/string"""
+        """Démarre la création d'une ROI"""
         try:
-            from core.roi_manager import ROIType
+            logger.info(f"📐 Démarrage création ROI {roi_type}")
             
-            # === DÉTECTION AUTOMATIQUE DU TYPE ===
-            if isinstance(roi_type, ROIType):
-                # Cas 1: Objet ROIType reçu directement (depuis lambda avec ROIType.RECTANGLE)
-                logger.info(f"🔍 DEBUG: ROIType enum reçu directement: {roi_type}")
-                roi_type_enum = roi_type
-                roi_type_str = roi_type.value  # 'rectangle', 'polygon', etc.
-                
-            elif isinstance(roi_type, str):
-                # Cas 2: String reçue (depuis lambda avec 'rectangle')
-                logger.info(f"🔍 DEBUG: String reçue: '{roi_type}'")
-                roi_type_mapping = {
-                    'rectangle': ROIType.RECTANGLE,
-                    'polygon': ROIType.POLYGON,
-                    'circle': ROIType.CIRCLE
-                }
-                roi_type_enum = roi_type_mapping.get(roi_type.lower())
-                roi_type_str = roi_type
-                
-                if roi_type_enum is None:
-                    logger.error(f"❌ Type ROI string invalide: '{roi_type}' - Types supportés: {list(roi_type_mapping.keys())}")
-                    return
-                    
-            else:
-                # Cas 3: Type non supporté
-                logger.error(f"❌ Type paramètre invalide: {type(roi_type)} (valeur: {roi_type})")
-                return
-            
-            logger.info(f"🔍 DEBUG: ROI à créer: {roi_type_enum} (nom: '{roi_type_str}')")
-            
-            # === VÉRIFICATIONS PRÉALABLES ===
             if not hasattr(self, 'roi_manager') or self.roi_manager is None:
                 logger.error("❌ ROIManager non initialisé")
                 return
                 
-            # === DÉMARRAGE CRÉATION ===
-            success = self.roi_manager.start_roi_creation(roi_type_enum)
-            logger.info(f"🔍 DEBUG: start_roi_creation retourné: {success}")
+            success = self.roi_manager.start_roi_creation(roi_type)
             
             if success:
-                logger.info(f"📐 Création ROI {roi_type_str} démarrée avec succès")
-                
-                # Activer interface création
-                self._enable_roi_creation_mode(roi_type_enum)
-                
+                logger.info(f"📐 Création ROI {roi_type} démarrée avec succès")
+                self._enable_roi_creation_mode(roi_type)
             else:
                 logger.warning("⚠️ Impossible de démarrer la création ROI")
                 
-        except ImportError as e:
-            logger.error(f"❌ Erreur import ROIType: {e}")
         except Exception as e:
             logger.error(f"❌ Erreur création ROI: {e}")
-            import traceback
-            logger.error(f"Traceback complet: {traceback.format_exc()}")
     
-    def _enable_roi_creation_mode(self, roi_type_enum):
-        """Active le mode création de ROI avec l'enum"""
+    def _enable_roi_creation_mode(self, roi_type):
+        """Active le mode création de ROI"""
         try:
-            from core.roi_manager import ROIType
+            logger.info(f"🔍 Activation mode création pour {roi_type}")
             
-            logger.info(f"🔍 DEBUG: Activation mode création pour {roi_type_enum}")
-            
-            # === VÉRIFICATIONS INTERFACE ===
-            if not hasattr(self, 'camera_display') or self.camera_display is None:
-                logger.error("❌ camera_display non initialisé")
-                return
-                
-            # === ACTIVATION INTERFACE SOURIS ===
+            # Activation interface souris
             self.camera_display.setMouseTracking(True)
             self.camera_display.mousePressEvent = self._on_display_mouse_press
             self.camera_display.mouseMoveEvent = self._on_display_mouse_move
             self.camera_display.mouseReleaseEvent = self._on_display_mouse_release
-            logger.info("🔍 DEBUG: Événements souris installés")
             
-            # === MISE À JOUR BOUTONS ===
-            if hasattr(self, 'roi_rect_btn'):
-                self.roi_rect_btn.setEnabled(False)
-            if hasattr(self, 'roi_poly_btn'):
-                self.roi_poly_btn.setEnabled(False)
-            if hasattr(self, 'cancel_roi_btn'):
-                self.cancel_roi_btn.setVisible(True)
-            logger.info("🔍 DEBUG: Interface boutons mise à jour")
+            # Mise à jour boutons
+            self.roi_rect_btn.setEnabled(False)
+            self.roi_poly_btn.setEnabled(False)
+            self.cancel_roi_btn.setVisible(True)
             
-            # === MESSAGE UTILISATEUR SELON TYPE ===
-            if roi_type_enum == ROIType.RECTANGLE:
+            # Message utilisateur
+            if roi_type == ROIType.RECTANGLE:
                 self._show_status_message("🖱️ Cliquez et glissez pour créer un rectangle", 0)
-            elif roi_type_enum == ROIType.POLYGON:
+            elif roi_type == ROIType.POLYGON:
                 self._show_status_message("🖱️ Cliquez pour ajouter des points, double-clic pour terminer", 0)
-            elif roi_type_enum == ROIType.CIRCLE:
-                self._show_status_message("🖱️ Cliquez le centre puis un point du cercle", 0)
             else:
                 self._show_status_message("🖱️ Mode création activé", 0)
                 
-            logger.info("✅ Mode création ROI activé avec succès")
-            
         except Exception as e:
             logger.error(f"❌ Erreur activation mode création: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
 
-    # === GESTION ÉVÉNEMENTS SOURIS ===
     def _on_display_mouse_press(self, event):
-        """Gestion clic souris - VERSION RENFORCÉE"""
-        pos_screen = (event.pos().x(), event.pos().y())
-        logger.info(f"🔍 DEBUG: Clic souris détecté à {pos_screen}")
-        
-        # === VÉRIFICATIONS PRÉALABLES ===
-        if not hasattr(self, 'roi_manager') or not self.roi_manager:
-            logger.warning("⚠️ roi_manager non disponible")
-            return
-            
-        if not self.roi_manager.is_creating:
-            logger.warning("⚠️ ROI Manager non en mode création")
+        """Gestion clic souris"""
+        if not hasattr(self, 'roi_manager') or not self.roi_manager.is_creating:
             return
         
-        # === VÉRIFICATION STREAMING ACTIF ===
-        if not hasattr(self, 'streaming_active') or not self.streaming_active:
-            logger.warning("⚠️ Streaming non actif - impossible de convertir coordonnées")
-            self._show_status_message("⚠️ Veuillez démarrer le streaming avant de créer des ROI", 3000)
-            return
-            
-        # Conversion coordonnées écran vers image
         pos_image = self._screen_to_image_coords(event.pos())
-        logger.info(f"🔍 DEBUG: Coordonnées converties: {pos_screen} -> {pos_image}")
-        
         if pos_image is None:
-            logger.warning("⚠️ Impossible de convertir coordonnées souris - vérifiez que le streaming est actif")
-            self._show_status_message("⚠️ Erreur conversion coordonnées - vérifiez le streaming", 3000)
             return
             
         try:
-            # Ajouter point à la ROI en cours
             completed = self.roi_manager.add_creation_point(pos_image)
-            logger.info(f"🔍 DEBUG: Point ajouté, ROI terminée: {completed}")
-            
             if completed:
-                # ROI terminée (rectangle ou cercle)
-                logger.info("✅ ROI complétée - Finalisation")
                 self._finalize_roi_creation()
-            else:
-                # Continuer création (polygone ou première étape rectangle/cercle)
-                logger.info("➡️ Création ROI en cours - Attente point suivant")
-                self._update_roi_display()
                 
         except Exception as e:
             logger.error(f"❌ Erreur ajout point ROI: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-
-    def _initialize_frame_size_fallback(self):
-        """Initialise une taille de frame par défaut si nécessaire"""
-        try:
-            if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
-                # Tentative récupération depuis la caméra active
-                if (hasattr(self, 'camera_manager') and 
-                    self.camera_manager and 
-                    self.selected_camera_alias):
-                    
-                    try:
-                        success, frame, _ = self.camera_manager.get_camera_frame(self.selected_camera_alias)
-                        if success and frame is not None:
-                            self.current_frame_size = (frame.shape[1], frame.shape[0])
-                            logger.info(f"✅ Taille frame récupérée: {self.current_frame_size}")
-                            return
-                    except Exception as e:
-                        logger.warning(f"⚠️ Impossible de récupérer frame: {e}")
-                
-                # Valeurs par défaut basées sur la configuration caméra courante
-                default_width = 640
-                default_height = 480
-                
-                self.current_frame_size = (default_width, default_height)
-                logger.info(f"🔍 DEBUG: Taille frame initialisée par défaut: {self.current_frame_size}")
-                
-        except Exception as e:
-            logger.error(f"❌ Erreur initialisation taille frame: {e}")
 
     def _on_display_mouse_move(self, event):
         """Gestion déplacement souris - Preview temps réel"""
         if not hasattr(self, 'roi_manager') or not self.roi_manager.is_creating:
             return
             
-        # Mise à jour preview en temps réel
         pos_image = self._screen_to_image_coords(event.pos())
         if pos_image is not None:
-            # Stocker position pour le rendu preview
             self.roi_preview_pos = pos_image
-            # Le rendu sera fait automatiquement via _process_frame()
 
     def _on_display_mouse_release(self, event):
-        """Gestion relâchement souris sur l'affichage"""
-        # Pour rectangles, le relâchement pourrait compléter la création
-        logger.info("🔍 DEBUG: Relâchement souris détecté")
+        """Gestion relâchement souris"""
+        pass
 
     def _on_display_mouse_double_click(self, event):
         """Gestion double-clic - Finalisation polygones"""
-        logger.info("🔍 DEBUG: Double-clic détecté")
-        
         if (hasattr(self, 'roi_manager') and 
             self.roi_manager.is_creating and 
+            hasattr(self.roi_manager, 'creation_type') and
             self.roi_manager.creation_type == ROIType.POLYGON):
             
-            logger.info("📐 Finalisation polygone via double-clic")
             success = self.roi_manager.complete_polygon_creation()
             if success:
                 self._finalize_roi_creation()
-                logger.info("✅ Polygone créé avec succès")
-            else:
-                logger.warning("⚠️ Impossible de finaliser le polygone")
 
     def _screen_to_image_coords(self, screen_pos):
-        """Convertit coordonnées écran vers coordonnées image - VERSION CORRIGÉE"""
+        """Convertit coordonnées écran vers coordonnées image"""
         try:
-            # === VÉRIFICATION AVEC FALLBACK ===
             if not hasattr(self, 'current_frame_size') or self.current_frame_size is None:
-                logger.warning("⚠️ current_frame_size non définie, tentative récupération depuis caméra")
-                
-                # Tentative récupération frame actuelle
                 if hasattr(self, 'camera_manager') and self.camera_manager and self.selected_camera_alias:
                     try:
-                        # CORRECTION: Utiliser get_camera_frame au lieu de get_latest_frame
-                        success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
+                        success, frame, _ = self.camera_manager.get_camera_frame(self.selected_camera_alias)
                         if success and frame is not None:
                             self.current_frame_size = (frame.shape[1], frame.shape[0])
-                            logger.info(f"✅ Taille frame récupérée: {self.current_frame_size}")
                         else:
-                            logger.error("❌ Aucune frame disponible depuis camera_manager")
                             return None
                     except Exception as e:
                         logger.error(f"❌ Erreur récupération frame: {e}")
                         return None
                 else:
-                    logger.error("❌ camera_manager non disponible ou pas de caméra sélectionnée")
                     return None
                 
-            # Récupérer tailles
             display_size = self.camera_display.size()
             img_width, img_height = self.current_frame_size
             
-            logger.info(f"🔍 DEBUG: Conversion coords - Display: {display_size.width()}x{display_size.height()}, "
-                    f"Image: {img_width}x{img_height}, Click: {screen_pos.x()},{screen_pos.y()}")
-            
-            # === VALIDATION TAILLES ===
             if display_size.width() <= 0 or display_size.height() <= 0:
-                logger.error("❌ Taille affichage invalide")
                 return None
                 
             if img_width <= 0 or img_height <= 0:
-                logger.error("❌ Taille image invalide")
                 return None
             
             # Calcul du ratio et offset pour conserver aspect ratio
@@ -1518,79 +1061,59 @@ class TargetTab(QWidget):
             image_ratio = img_width / img_height
             
             if display_ratio > image_ratio:
-                # Barres noires horizontales (image plus haute que l'affichage)
                 scale = display_size.height() / img_height
                 scaled_width = img_width * scale
                 offset_x = (display_size.width() - scaled_width) / 2
                 offset_y = 0
             else:
-                # Barres noires verticales (image plus large que l'affichage)
                 scale = display_size.width() / img_width
                 scaled_height = img_height * scale
                 offset_x = 0
                 offset_y = (display_size.height() - scaled_height) / 2
                 
-            logger.info(f"🔍 DEBUG: Scale={scale:.2f}, Offset=({offset_x:.1f}, {offset_y:.1f})")
-                
             # Conversion coordonnées
             image_x = int((screen_pos.x() - offset_x) / scale)
             image_y = int((screen_pos.y() - offset_y) / scale)
-            
-            logger.info(f"🔍 DEBUG: Coordonnées converties: ({screen_pos.x()}, {screen_pos.y()}) -> ({image_x}, {image_y})")
             
             # Validation bornes
             if 0 <= image_x < img_width and 0 <= image_y < img_height:
                 return (image_x, image_y)
             else:
-                logger.warning(f"⚠️ Coordonnées hors limites: ({image_x}, {image_y}) dans image {img_width}x{img_height}")
                 return None
                 
         except Exception as e:
             logger.error(f"❌ Erreur conversion coordonnées: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
         
     def _finalize_roi_creation(self):
         """Finalise la création d'une ROI et restaure l'interface"""
         try:
-            logger.info("🔍 DEBUG: Début finalisation création ROI")
+            # Désactivation interface souris
+            self.camera_display.setMouseTracking(False)
+            self.camera_display.mousePressEvent = None
+            self.camera_display.mouseMoveEvent = None
+            self.camera_display.mouseReleaseEvent = None
             
-            # === DÉSACTIVATION INTERFACE SOURIS ===
-            if hasattr(self, 'camera_display'):
-                self.camera_display.setMouseTracking(False)
-                self.camera_display.mousePressEvent = None
-                self.camera_display.mouseMoveEvent = None
-                self.camera_display.mouseReleaseEvent = None
-                logger.info("🔍 DEBUG: Événements souris désinstallés")
+            # Restauration boutons
+            self.roi_rect_btn.setEnabled(True)
+            self.roi_poly_btn.setEnabled(True)
+            self.cancel_roi_btn.setVisible(False)
             
-            # === RESTAURATION BOUTONS ===
-            if hasattr(self, 'roi_rect_btn'):
-                self.roi_rect_btn.setEnabled(True)
-            if hasattr(self, 'roi_poly_btn'):
-                self.roi_poly_btn.setEnabled(True)
-            if hasattr(self, 'cancel_roi_btn'):
-                self.cancel_roi_btn.setVisible(False)
-            logger.info("🔍 DEBUG: Interface boutons restaurée")
-            
-            # === NETTOYAGE INTERFACE ===
+            # Nettoyage interface
             if hasattr(self, 'status_label'):
                 self.status_label.setVisible(False)
             
-            # === MISE À JOUR COMPTEUR ===
+            # Mise à jour compteur
             self._update_roi_count_display()
             
-            # === NETTOYAGE VARIABLES TEMPORAIRES ===
+            # Nettoyage variables temporaires
             if hasattr(self, 'roi_preview_pos'):
                 delattr(self, 'roi_preview_pos')
                 
-            logger.info("✅ Finalisation ROI terminée avec succès")
             self._show_status_message("✅ ROI créée avec succès !", 2000)
             
         except Exception as e:
             logger.error(f"❌ Erreur finalisation ROI: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
 
     def _update_roi_count_display(self):
         """Met à jour l'affichage du nombre de ROI"""
@@ -1598,29 +1121,18 @@ class TargetTab(QWidget):
             if hasattr(self, 'roi_manager') and hasattr(self, 'roi_info_label'):
                 roi_count = len(self.roi_manager.rois)
                 self.roi_info_label.setText(f"ROI actives: {roi_count}")
-                logger.info(f"🔍 DEBUG: Compteur ROI mis à jour: {roi_count}")
-            else:
-                logger.warning("⚠️ Impossible de mettre à jour compteur ROI (attributs manquants)")
         except Exception as e:
             logger.error(f"❌ Erreur mise à jour compteur ROI: {e}")
-
-    def _update_roi_display(self):
-        """Met à jour l'affichage avec les ROI"""
-        # Cette méthode sera appelée automatiquement lors du rendu des frames
-        # via _process_frame() -> roi_manager.draw_rois()
-        pass
 
     def _show_status_message(self, message, duration_ms=3000):
         """Affiche un message de statut temporaire"""
         try:
             logger.info(f"💬 {message}")
             
-            # Affichage dans barre de statut si elle existe
             if hasattr(self, 'status_label'):
                 self.status_label.setText(message)
                 self.status_label.setVisible(True)
                 
-                # Timer pour masquer automatiquement si durée > 0
                 if duration_ms > 0:
                     if not hasattr(self, 'status_timer'):
                         from PyQt6.QtCore import QTimer
@@ -1633,14 +1145,15 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur affichage message: {e}")
 
     def _clear_all_rois(self):
-        """Efface toutes les ROI - VERSION CORRIGÉE"""
+        """Efface toutes les ROI"""
         try:
             roi_count = len(self.roi_manager.rois) if hasattr(self, 'roi_manager') else 0
             
             if hasattr(self, 'roi_manager') and self.roi_manager:
                 self.roi_manager.rois.clear()
-                self.roi_manager.selected_roi_id = None
-                self.roi_manager.cancel_roi_creation()  # Annule création en cours
+                if hasattr(self.roi_manager, 'selected_roi_id'):
+                    self.roi_manager.selected_roi_id = None
+                self.roi_manager.cancel_roi_creation()
                 
             self._update_roi_count_display()
             logger.info(f"🗑️ {roi_count} ROI effacées")
@@ -1700,7 +1213,6 @@ class TargetTab(QWidget):
     def _on_zoom_changed(self, value):
         """Callback changement zoom"""
         self.zoom_label.setText(f"{value}%")
-        # Le redimensionnement se fait dans _update_display()
     
     def _update_detection_stats(self, detection_info):
         """Met à jour les statistiques de détection"""
@@ -1748,13 +1260,36 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
         
         if file_path:
             try:
-                # TODO: Implémenter export réel
                 QMessageBox.information(self, "Export", f"Données exportées vers:\n{file_path}")
                 logger.info(f"💾 Données exportées: {file_path}")
             except Exception as e:
                 logger.error(f"❌ Erreur export: {e}")
                 QMessageBox.critical(self, "Erreur Export", f"Impossible d'exporter:\n{e}")
     
+    def _update_display_frame(self, frame):
+        """Met à jour l'affichage avec la frame traitée"""
+        try:
+            # Conversion BGR vers RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Création QImage
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            
+            # Redimensionnement avec conservation aspect ratio
+            display_size = self.camera_display.size()
+            scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
+                display_size, Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            # Mise à jour affichage
+            self.camera_display.setPixmap(scaled_pixmap)
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur mise à jour affichage: {e}")
+
     # === MÉTHODES PUBLIQUES POUR INTEGRATION ===
     
     def get_tracking_status(self) -> dict:
@@ -1789,115 +1324,8 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
             logger.error(f"❌ Erreur configuration paramètres: {e}")
     
     def force_camera_refresh(self):
-        """Force la vérification de l'état des caméras"""
+        """Force la vérification de l'état des caméras - VERSION CORRIGÉE"""
         self._check_camera_status()
-
-        """Traitement des frames avec détection et rendu ROI - VERSION CORRIGÉE"""
-        if not self.camera_manager or not self.streaming_active:
-            return
-            
-        try:
-            # Récupération frame
-            frame = self.camera_manager.get_latest_frame()
-            if frame is None:
-                return
-                
-            # === CORRECTION CRITIQUE: Sauvegarde taille pour conversion coordonnées ===
-            self.current_frame_size = (frame.shape[1], frame.shape[0])  # (width, height)
-            logger.info(f"🔍 DEBUG: Frame size mise à jour: {self.current_frame_size}")
-            
-            # Copie pour traitement
-            display_frame = frame.copy()
-            
-            # Détection si activée
-            if self.tracking_active and hasattr(self, 'target_detector'):
-                try:
-                    detections = self.target_detector.detect_all_targets(frame)
-                    if detections:
-                        display_frame = self._draw_detections(display_frame, detections)
-                except Exception as e:
-                    logger.warning(f"⚠️ Erreur détection: {e}")
-            
-            # Rendu des ROI
-            if hasattr(self, 'roi_manager') and self.roi_manager:
-                try:
-                    display_frame = self.roi_manager.draw_rois(display_frame)
-                    
-                    # Dessin preview ROI en cours de création
-                    if (self.roi_manager.is_creating and 
-                        hasattr(self, 'roi_preview_pos') and 
-                        self.roi_preview_pos):
-                        display_frame = self._draw_roi_preview(display_frame)
-                        
-                except Exception as e:
-                    logger.warning(f"⚠️ Erreur rendu ROI: {e}")
-            
-            # Conversion et affichage
-            self._update_display_frame(display_frame)
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur traitement frame: {e}")
-
-    def _draw_roi_preview(self, frame):
-        """Dessine l'aperçu de la ROI en cours de création"""
-        try:
-            preview_color = (0, 255, 255)  # Jaune cyan pour preview
-            
-            if (self.roi_manager.creation_type == ROIType.RECTANGLE and 
-                len(self.roi_manager.temp_points) == 1):
-                
-                # Preview rectangle
-                start_point = self.roi_manager.temp_points[0]
-                end_point = self.roi_preview_pos
-                
-                cv2.rectangle(frame, start_point, end_point, preview_color, 2)
-                
-            elif (self.roi_manager.creation_type == ROIType.POLYGON and 
-                self.roi_manager.temp_points):
-                
-                # Preview polygone
-                points = self.roi_manager.temp_points + [self.roi_preview_pos]
-                if len(points) >= 2:
-                    points_array = np.array(points, dtype=np.int32)
-                    cv2.polylines(frame, [points_array], False, preview_color, 2)
-                    
-                # Points de contrôle
-                for i, point in enumerate(self.roi_manager.temp_points):
-                    cv2.circle(frame, point, 4, preview_color, -1)
-                    cv2.putText(frame, str(i), 
-                            (point[0] + 5, point[1] - 5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, preview_color, 1)
-            
-            return frame
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur dessin preview ROI: {e}")
-            return frame
-        
-    def _update_display_frame(self, frame):
-        """Met à jour l'affichage avec la frame traitée"""
-        try:
-            # Conversion BGR vers RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Création QImage
-            h, w, ch = rgb_frame.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            
-            # Redimensionnement avec conservation aspect ratio
-            display_size = self.camera_display.size()
-            scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
-                display_size, Qt.AspectRatioMode.KeepAspectRatio, 
-                Qt.TransformationMode.SmoothTransformation
-            )
-            
-            # Mise à jour affichage
-            self.camera_display.setPixmap(scaled_pixmap)
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur mise à jour affichage: {e}")
-
     
     # === NETTOYAGE ===
     
