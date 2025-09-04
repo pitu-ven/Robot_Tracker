@@ -459,15 +459,23 @@ class TargetTab(QWidget):
 
     def _setup_timers(self):
         """Configure les timers pour les mises à jour"""
-        # Timer de détection
+        # Timer de détection ET affichage
         self.detection_timer = QTimer()
-        self.detection_timer.timeout.connect(self._detect_targets_in_frame)
+        self.detection_timer.timeout.connect(self._process_frame)
         self.detection_timer.start(50)  # 20 FPS
         
         # Timer de mise à jour UI
         self.ui_update_timer = QTimer()
         self.ui_update_timer.timeout.connect(self._update_ui_stats)
         self.ui_update_timer.start(1000)  # 1 Hz
+
+    def _process_frame(self):
+        """Traite une frame : détection + affichage"""
+        # 1. Détection des cibles
+        self._detect_targets_in_frame()
+        
+        # 2. Mise à jour de l'affichage vidéo
+        self._update_video_display()
 
     def _update_ui_stats(self):
         """Met à jour les statistiques dans l'interface"""
@@ -534,11 +542,19 @@ class TargetTab(QWidget):
                 self.aruco_stats_label.setText(f"Marqueurs: {len(detected_markers)} détectés ({dict_type})")
                 
                 # CORRECTION: Mise à jour du détecteur avec le bon dictionnaire
-                if hasattr(self.target_detector, 'aruco_config'):
+                if hasattr(self.target_detector, 'update_aruco_config'):
+                    self.target_detector.update_aruco_config(dict_type)
+                    logger.info(f"🎯 Détecteur ArUco mis à jour: {dict_type}")
+                elif hasattr(self.target_detector, 'aruco_config'):
+                    # Fallback : mise à jour manuelle + réinitialisation
                     self.target_detector.aruco_config['dictionary_type'] = dict_type
-                    logger.info(f"🎯 Dictionnaire mis à jour: {dict_type}")
-                    # Réinitialiser le détecteur ArUco avec le bon dictionnaire
-                    self.target_detector._init_aruco_detector()
+                    if hasattr(self.target_detector, 'force_reinit_aruco'):
+                        self.target_detector.force_reinit_aruco()
+                    elif hasattr(self.target_detector, '_init_aruco_detector'):
+                        self.target_detector._init_aruco_detector()
+                    logger.info(f"🎯 Détecteur ArUco réinitialisé: {dict_type}")
+                else:
+                    logger.warning("⚠️ Impossible de mettre à jour le dictionnaire ArUco")
             else:
                 self.aruco_stats_label.setText("Marqueurs: 0 détecté")
                 self.aruco_stats_label.setStyleSheet("QLabel { color: orange; }")
@@ -640,15 +656,115 @@ class TargetTab(QWidget):
 
     # === SLOTS POUR INTÉGRATION ===
     
-    def on_camera_ready(self):
-        """Callback quand la caméra est prête"""
-        logger.info("📹 Caméra prête - démarrage détection")
-        self.camera_status_label.setText("État: ✅ Caméra active")
-        self.camera_status_label.setStyleSheet("QLabel { color: green; }")
-        
-    def on_frame_received(self, frame):
-        """Callback réception nouvelle frame de la caméra"""
-        self.current_frame = frame
+    # === CALLBACKS POUR SIGNAUX CAMÉRA ===
+    
+    def _on_camera_changed(self, camera_alias: str):
+        """Callback quand une nouvelle caméra est ouverte"""
+        try:
+            logger.info(f"📹 Nouvelle caméra sélectionnée: {camera_alias}")
+            
+            # Vérification disponibilité caméra
+            if not self.camera_manager or not hasattr(self.camera_manager, 'is_camera_open'):
+                logger.warning("⚠️ CameraManager non disponible")
+                return
+                
+            if not self.camera_manager.is_camera_open(camera_alias):
+                logger.warning(f"⚠️ Caméra {camera_alias} non disponible")
+                self.camera_status_label.setText(f"État: ❌ {camera_alias} indisponible")
+                self.camera_status_label.setStyleSheet("QLabel { color: red; }")
+                return
+            
+            # Configuration caméra active
+            self.selected_camera_alias = camera_alias
+            self.camera_ready = True
+            
+            # Mise à jour interface
+            self.camera_status_label.setText(f"État: ✅ {camera_alias} prête")
+            self.camera_status_label.setStyleSheet("QLabel { color: green; }")
+            
+            logger.info(f"✅ Caméra {camera_alias} configurée pour détection")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur changement caméra: {e}")
+            self.camera_status_label.setText("État: ❌ Erreur configuration")
+            self.camera_status_label.setStyleSheet("QLabel { color: red; }")
+
+    def _on_streaming_started(self):
+        """Callback quand le streaming démarre"""
+        try:
+            logger.info("🎬 Streaming démarré - activation détection")
+            
+            # Activation timers de détection si pas déjà actifs
+            if hasattr(self, 'detection_timer') and not self.detection_timer.isActive():
+                self.detection_timer.start(50)  # 20 FPS
+                
+            # Mise à jour statut
+            if hasattr(self, 'camera_status_label'):
+                current_text = self.camera_status_label.text()
+                if "prête" in current_text:
+                    new_text = current_text.replace("prête", "streaming")
+                    self.camera_status_label.setText(new_text)
+                    self.camera_status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
+            
+            logger.info("✅ Détection activée avec le streaming")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur activation détection streaming: {e}")
+
+    def _on_streaming_stopped(self):
+        """Callback quand le streaming s'arrête"""
+        try:
+            logger.info("⏹️ Streaming arrêté - pause détection")
+            
+            # Mise à jour statut
+            if hasattr(self, 'camera_status_label'):
+                current_text = self.camera_status_label.text()
+                if "streaming" in current_text:
+                    new_text = current_text.replace("streaming", "prête")
+                    self.camera_status_label.setText(new_text)
+                    self.camera_status_label.setStyleSheet("QLabel { color: green; }")
+            
+            logger.info("✅ Détection en pause (streaming arrêté)")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur pause détection streaming: {e}")
+
+    def _check_camera_status(self):
+        """Vérifie et met à jour le statut de la caméra"""
+        try:
+            if hasattr(self, 'selected_camera_alias') and self.selected_camera_alias:
+                # Vérification si caméra toujours active
+                if self.camera_manager and hasattr(self.camera_manager, 'is_camera_open'):
+                    if self.camera_manager.is_camera_open(self.selected_camera_alias):
+                        # Caméra OK
+                        if hasattr(self.camera_manager, '_is_streaming') and self.camera_manager._is_streaming:
+                            status_text = f"État: ✅ {self.selected_camera_alias} streaming"
+                            color = "green"
+                        else:
+                            status_text = f"État: ✅ {self.selected_camera_alias} prête"
+                            color = "green"
+                    else:
+                        # Caméra fermée
+                        status_text = "État: ❌ Caméra fermée"
+                        color = "red"
+                        self.camera_ready = False
+                else:
+                    status_text = "État: ⚠️ Manager non disponible"
+                    color = "orange"
+                    self.camera_ready = False
+            else:
+                # Aucune caméra sélectionnée
+                status_text = "État: Aucune caméra"
+                color = "orange"
+                self.camera_ready = False
+            
+            # Mise à jour interface
+            if hasattr(self, 'camera_status_label'):
+                self.camera_status_label.setText(status_text)
+                self.camera_status_label.setStyleSheet(f"QLabel {{ color: {color}; }}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur vérification statut caméra: {e}")
 
     def closeEvent(self, event):
         """Nettoyage à la fermeture"""

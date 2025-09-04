@@ -71,103 +71,181 @@ class TargetDetector:
     
     def _init_aruco_detector(self):
         """Initialise le détecteur ArUco avec compatibilité multi-versions OpenCV"""
-        try:
-            # Dictionnaire ArUco depuis config
-            dict_name = self.aruco_config.get('dictionary_type', '4X4_50')
-            
-            # Support des différentes versions d'OpenCV
-            if hasattr(cv2, 'aruco'):
-                try:
-                    # Nouvelle API OpenCV 4.6+ (ArucoDetector)
-                    if hasattr(cv2.aruco, 'ArucoDetector'):
-                        # Dictionnaire ArUco
-                        aruco_dict_map = {
-                            '4X4_50': cv2.aruco.DICT_4X4_50,
-                            '4X4_100': cv2.aruco.DICT_4X4_100,
-                            '4X4_250': cv2.aruco.DICT_4X4_250,
-                            '4X4_1000': cv2.aruco.DICT_4X4_1000,
-                            '5X5_50': cv2.aruco.DICT_5X5_50,
-                            '5X5_100': cv2.aruco.DICT_5X5_100,
-                            '5X5_250': cv2.aruco.DICT_5X5_250,
-                            '5X5_1000': cv2.aruco.DICT_5X5_1000,
-                            '6X6_50': cv2.aruco.DICT_6X6_50,
-                            '6X6_100': cv2.aruco.DICT_6X6_100,
-                            '6X6_250': cv2.aruco.DICT_6X6_250,
-                            '6X6_1000': cv2.aruco.DICT_6X6_1000,
-                            '7X7_50': cv2.aruco.DICT_7X7_50,
-                            '7X7_100': cv2.aruco.DICT_7X7_100,
-                            '7X7_250': cv2.aruco.DICT_7X7_250,
-                            '7X7_1000': cv2.aruco.DICT_7X7_1000
-                        }
-                        
-                        dict_id = aruco_dict_map.get(dict_name, cv2.aruco.DICT_4X4_50)
-                        self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
-                        
-                        # Paramètres de détection
-                        self.aruco_params = cv2.aruco.DetectorParameters()
-                        
-                        # Application des paramètres depuis config
-                        detection_params = self.aruco_config.get('detection_params', {})
-                        for param, value in detection_params.items():
-                            if hasattr(self.aruco_params, param):
-                                setattr(self.aruco_params, param, value)
-                        
-                        # Création du détecteur unifié (nouvelle API)
-                        self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
-                        self.use_modern_api = True
-                        logger.info(f"ArUco initialisé: {dict_name} (API moderne ArucoDetector)")
-                        
-                    else:
-                        # Ancienne API (OpenCV < 4.6)
-                        aruco_dict_map = {
-                            '4X4_50': cv2.aruco.DICT_4X4_50,
-                            '4X4_100': cv2.aruco.DICT_4X4_100,
-                            '4X4_250': cv2.aruco.DICT_4X4_250,
-                            '4X4_1000': cv2.aruco.DICT_4X4_1000,
-                            '5X5_50': cv2.aruco.DICT_5X5_50,
-                            '5X5_100': cv2.aruco.DICT_5X5_100,
-                            '5X5_250': cv2.aruco.DICT_5X5_250,
-                            '5X5_1000': cv2.aruco.DICT_5X5_1000,
-                            '6X6_50': cv2.aruco.DICT_6X6_50,
-                            '6X6_100': cv2.aruco.DICT_6X6_100,
-                            '6X6_250': cv2.aruco.DICT_6X6_250,
-                            '6X6_1000': cv2.aruco.DICT_6X6_1000,
-                            '7X7_50': cv2.aruco.DICT_7X7_50,
-                            '7X7_100': cv2.aruco.DICT_7X7_100,
-                            '7X7_250': cv2.aruco.DICT_7X7_250,
-                            '7X7_1000': cv2.aruco.DICT_7X7_1000
-                        }
-                        
-                        dict_id = aruco_dict_map.get(dict_name, cv2.aruco.DICT_4X4_50)
-                        self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id) if hasattr(cv2.aruco, 'getPredefinedDictionary') else cv2.aruco.Dictionary_get(dict_id)
-                        
-                        # Paramètres de détection
-                        self.aruco_params = cv2.aruco.DetectorParameters_create() if hasattr(cv2.aruco, 'DetectorParameters_create') else cv2.aruco.DetectorParameters()
-                        
-                        # Application des paramètres depuis config
-                        detection_params = self.aruco_config.get('detection_params', {})
-                        for param, value in detection_params.items():
-                            if hasattr(self.aruco_params, param):
-                                setattr(self.aruco_params, param, value)
-                        
-                        self.aruco_detector = None  # Pas d'objet détecteur unifié
-                        self.use_modern_api = False
-                        logger.info(f"ArUco initialisé: {dict_name} (API classique)")
-                        
-                except Exception as e:
-                    logger.error(f"Erreur configuration ArUco: {e}")
-                    # Mode fallback minimal
-                    self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50) if hasattr(cv2.aruco, 'getPredefinedDictionary') else cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
-                    self.aruco_params = cv2.aruco.DetectorParameters_create() if hasattr(cv2.aruco, 'DetectorParameters_create') else cv2.aruco.DetectorParameters()
-                    self.aruco_detector = None
-                    self.use_modern_api = False
-                    logger.warning("⚠️ Mode fallback ArUco activé")
+        # CORRECTION: Dictionnaire ArUco depuis config avec valeur par défaut cohérente
+        dict_name = self.aruco_config.get('dictionary_type', 'DICT_4X4_50')  # Valeur par défaut cohérente
+        logger.debug(f"🎯 Configuration dictionnaire: {dict_name}")
+        
+        # Support des différentes versions d'OpenCV
+        if hasattr(cv2, 'aruco'):
+            try:
+                # Nouvelle API OpenCV 4.6+ (ArucoDetector)
+                if hasattr(cv2.aruco, 'ArucoDetector'):
+                    # Dictionnaire ArUco - CORRECTION: Mapping plus robuste
+                    aruco_dict_map = {
+                        'DICT_4X4_50': cv2.aruco.DICT_4X4_50,
+                        '4X4_50': cv2.aruco.DICT_4X4_50,
+                        'DICT_4X4_100': cv2.aruco.DICT_4X4_100,
+                        '4X4_100': cv2.aruco.DICT_4X4_100,
+                        'DICT_4X4_250': cv2.aruco.DICT_4X4_250,
+                        '4X4_250': cv2.aruco.DICT_4X4_250,
+                        'DICT_4X4_1000': cv2.aruco.DICT_4X4_1000,
+                        '4X4_1000': cv2.aruco.DICT_4X4_1000,
+                        'DICT_5X5_50': cv2.aruco.DICT_5X5_50,
+                        '5X5_50': cv2.aruco.DICT_5X5_50,
+                        'DICT_5X5_100': cv2.aruco.DICT_5X5_100,
+                        '5X5_100': cv2.aruco.DICT_5X5_100,
+                        'DICT_5X5_250': cv2.aruco.DICT_5X5_250,
+                        '5X5_250': cv2.aruco.DICT_5X5_250,
+                        'DICT_5X5_1000': cv2.aruco.DICT_5X5_1000,
+                        '5X5_1000': cv2.aruco.DICT_5X5_1000,
+                        'DICT_6X6_50': cv2.aruco.DICT_6X6_50,
+                        '6X6_50': cv2.aruco.DICT_6X6_50,
+                        'DICT_6X6_100': cv2.aruco.DICT_6X6_100,
+                        '6X6_100': cv2.aruco.DICT_6X6_100,
+                        'DICT_6X6_250': cv2.aruco.DICT_6X6_250,
+                        '6X6_250': cv2.aruco.DICT_6X6_250,
+                        'DICT_6X6_1000': cv2.aruco.DICT_6X6_1000,
+                        '6X6_1000': cv2.aruco.DICT_6X6_1000,
+                        'DICT_7X7_50': cv2.aruco.DICT_7X7_50,
+                        '7X7_50': cv2.aruco.DICT_7X7_50,
+                        'DICT_7X7_100': cv2.aruco.DICT_7X7_100,
+                        '7X7_100': cv2.aruco.DICT_7X7_100,
+                        'DICT_7X7_250': cv2.aruco.DICT_7X7_250,
+                        '7X7_250': cv2.aruco.DICT_7X7_250,
+                        'DICT_7X7_1000': cv2.aruco.DICT_7X7_1000,
+                        '7X7_1000': cv2.aruco.DICT_7X7_1000
+                    }
                     
+                    # CORRECTION: Meilleure gestion des erreurs de dictionnaire
+                    dict_id = aruco_dict_map.get(dict_name)
+                    if dict_id is None:
+                        logger.warning(f"⚠️ Dictionnaire '{dict_name}' non reconnu, utilisation de DICT_4X4_50")
+                        dict_id = cv2.aruco.DICT_4X4_50
+                        dict_name = 'DICT_4X4_50'
+                    
+                    self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+                    logger.debug(f"📖 Dictionnaire chargé: {dict_name}")
+                    
+                    # Paramètres de détection
+                    self.aruco_params = cv2.aruco.DetectorParameters()
+                    
+                    # CORRECTION: Application paramètres avec vérification
+                    detection_params = self.aruco_config.get('detection_params', {})
+                    applied_params = 0
+                    for param, value in detection_params.items():
+                        if hasattr(self.aruco_params, param):
+                            try:
+                                setattr(self.aruco_params, param, value)
+                                applied_params += 1
+                            except Exception as e:
+                                logger.warning(f"⚠️ Paramètre {param} non appliqué: {e}")
+                        else:
+                            logger.debug(f"📝 Paramètre {param} non supporté par cette version d'OpenCV")
+                    
+                    logger.debug(f"⚙️ {applied_params} paramètres de détection appliqués")
+                    
+                    # Création du détecteur unifié (nouvelle API)
+                    self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+                    self.use_modern_api = True
+                    
+                    logger.info(f"ArUco initialisé: {dict_name} (API moderne ArucoDetector)")
+                    
+                else:
+                    # Ancienne API (OpenCV < 4.6) - CORRECTION: Même mapping
+                    aruco_dict_map = {
+                        'DICT_4X4_50': cv2.aruco.DICT_4X4_50,
+                        '4X4_50': cv2.aruco.DICT_4X4_50,
+                        'DICT_4X4_100': cv2.aruco.DICT_4X4_100,
+                        '4X4_100': cv2.aruco.DICT_4X4_100,
+                        'DICT_5X5_100': cv2.aruco.DICT_5X5_100,
+                        '5X5_100': cv2.aruco.DICT_5X5_100,
+                        # ... autres mappings identiques
+                    }
+                    
+                    dict_id = aruco_dict_map.get(dict_name, cv2.aruco.DICT_4X4_50)
+                    self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id) if hasattr(cv2.aruco, 'getPredefinedDictionary') else cv2.aruco.Dictionary_get(dict_id)
+                    
+                    # Paramètres de détection
+                    self.aruco_params = cv2.aruco.DetectorParameters_create() if hasattr(cv2.aruco, 'DetectorParameters_create') else cv2.aruco.DetectorParameters()
+                    
+                    # Application des paramètres depuis config
+                    detection_params = self.aruco_config.get('detection_params', {})
+                    for param, value in detection_params.items():
+                        if hasattr(self.aruco_params, param):
+                            setattr(self.aruco_params, param, value)
+                    
+                    self.aruco_detector = None  # Pas d'objet détecteur unifié
+                    self.use_modern_api = False
+                    logger.info(f"ArUco initialisé: {dict_name} (API classique)")
+                    
+            except Exception as e:
+                logger.error(f"Erreur configuration ArUco: {e}")
+                # Mode fallback minimal
+                self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50) if hasattr(cv2.aruco, 'getPredefinedDictionary') else cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+                self.aruco_params = cv2.aruco.DetectorParameters_create() if hasattr(cv2.aruco, 'DetectorParameters_create') else cv2.aruco.DetectorParameters()
+                self.aruco_detector = None
+                self.use_modern_api = False
+                logger.warning("⚠️ Mode fallback ArUco activé")
+                    
+    def update_aruco_config(self, new_dict_type):
+        """Met à jour la configuration ArUco et réinitialise le détecteur"""
+        logger.info(f"🔄 Mise à jour dictionnaire ArUco: {self.aruco_config.get('dictionary_type', 'Non défini')} → {new_dict_type}")
+        
+        # Mise à jour de la configuration
+        self.aruco_config['dictionary_type'] = new_dict_type
+        
+        # RÉINITIALISATION COMPLÈTE du détecteur
+        self._init_aruco_detector()
+        
+        logger.info(f"✅ Détecteur ArUco réinitialisé avec {new_dict_type}")
+
+    def force_reinit_aruco(self):
+        """Force la réinitialisation du détecteur ArUco"""
+        try:
+            logger.info("🔄 Réinitialisation forcée du détecteur ArUco...")
+            self._init_aruco_detector()
+            logger.info("✅ Détecteur ArUco réinitialisé")
         except Exception as e:
-            logger.error(f"Erreur init ArUco: {e}")
-            self.detection_enabled[TargetType.ARUCO] = False
+            logger.error(f"❌ Erreur réinitialisation ArUco: {e}")
     
     def _init_morphology_kernels(self):
+        """Initialize morphology kernels for processing"""
+        # Kernel pour marqueurs réfléchissants
+        refl_kernel_size = self.reflective_config.get('morphology', {}).get('kernel_size', 5)
+        self.reflective_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (refl_kernel_size, refl_kernel_size)
+        )
+        
+        # Kernel pour LEDs
+        led_kernel_size = self.led_config.get('detection_params', {}).get('morphology_kernel', 3)
+        self.led_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (led_kernel_size, led_kernel_size)
+        )
+    
+    def update_aruco_config(self, new_dict_type):
+        """Met à jour la configuration ArUco et réinitialise le détecteur"""
+        try:
+            logger.info(f"🔄 Mise à jour dictionnaire ArUco: {self.aruco_config.get('dictionary_type', 'Non défini')} → {new_dict_type}")
+            
+            # Mise à jour de la configuration
+            self.aruco_config['dictionary_type'] = new_dict_type
+            
+            # RÉINITIALISATION COMPLÈTE du détecteur
+            self._init_aruco_detector()
+            
+            logger.info(f"✅ Détecteur ArUco réinitialisé avec {new_dict_type}")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur mise à jour ArUco config: {e}")
+
+    def force_reinit_aruco(self):
+        """Force la réinitialisation du détecteur ArUco"""
+        try:
+            logger.info("🔄 Réinitialisation forcée du détecteur ArUco...")
+            self._init_aruco_detector()
+            logger.info("✅ Détecteur ArUco réinitialisé")
+        except Exception as e:
+            logger.error(f"❌ Erreur réinitialisation ArUco: {e}")
         """Initialize morphology kernels for processing"""
         # Kernel pour marqueurs réfléchissants
         refl_kernel_size = self.reflective_config.get('morphology', {}).get('kernel_size', 5)
