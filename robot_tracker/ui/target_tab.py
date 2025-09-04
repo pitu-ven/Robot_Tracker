@@ -1,118 +1,104 @@
 # robot_tracker/ui/target_tab.py
-# Version 2.5 - CORRECTION: ROI cassant la détection ArUco
-# Modifications:
-# - ROI appliquée seulement quand explicitement activée
-# - Correction initialisation détecteur sans ROI forcée
-# - Amélioration gestion états ROI/détection
+# Version: v4.4 - Correction méthode _update_video_display
 
-import cv2
-import numpy as np
 import time
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 import logging
+from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QSplitter,
-    QGroupBox, QPushButton, QLabel, QComboBox, QSpinBox, QCheckBox,
-    QLineEdit, QTextEdit, QProgressBar, QFileDialog, QMessageBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSlider, QFrame
-)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
-from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon, QPainter, QPen, QColor
+from PyQt6.QtCore import QTimer, pyqtSignal, Qt
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
+                            QLabel, QPushButton, QCheckBox, QSpinBox, 
+                            QSlider, QMessageBox, QFileDialog)
+from PyQt6.QtGui import QImage, QPixmap
 
-# Import avec fallback pour éviter les erreurs d'import relatif
-try:
-    from core.aruco_config_loader import ArUcoConfigLoader
-    from core.target_detector import TargetDetector, TargetType
-    from core.roi_manager import ROIManager, ROIType
-except ImportError:
-    # Stubs temporaires pour éviter les erreurs lors du développement
-    class ArUcoConfigLoader:
-        def __init__(self, config): self.detected_markers = {}
-        def scan_aruco_folder(self, folder_path): return {}
-        def get_detector_params(self): return {}
-        def get_latest_aruco_folder(self): return None
-        def validate_markers(self): return 0, []
-        def _detect_common_dictionary(self): return "DICT_4X4_50"
-    
-    class TargetDetector:
-        def __init__(self, config): 
-            self.detection_enabled = {'aruco': True, 'reflective': True, 'led': True}
-        def detect_all_targets(self, frame): return []
-        def set_roi(self, roi=None, enabled=False): pass
-        def set_detection_enabled(self, target_type, enabled): pass
-    
-    class TargetType:
-        ARUCO = "aruco"
-        REFLECTIVE = "reflective"
-        LED = "led"
-    
-    class ROIManager:
-        def __init__(self, config_manager): 
-            self.is_creating = False
-            self.rois = []
-            self.temp_points = []
-            self.creation_type = None
-            self.selected_roi_id = None
-        def start_roi_creation(self, roi_type): 
-            self.is_creating = True
-            return True
-        def add_creation_point(self, point): return False
-        def cancel_roi_creation(self): self.is_creating = False
-        def complete_polygon_creation(self): return False
+from pathlib import Path
 
-    class ROIType:
-        RECTANGLE = "rectangle"
-        POLYGON = "polygon"
-        CIRCLE = "circle"
+from core.aruco_config_loader import ArUcoConfigLoader
+from core.target_detector import TargetDetector
+from core.roi_manager import ROIManager
 
 logger = logging.getLogger(__name__)
 
 class TargetTab(QWidget):
-    """Onglet Cible - Focus détection/suivi avec détection automatique caméra"""
+    """
+    Onglet Cible - Architecture Maître-Esclave
     
-    # Signaux pour communication inter-onglets
-    target_detected = pyqtSignal(dict)
-    tracking_started = pyqtSignal()
-    tracking_stopped = pyqtSignal()
-    status_changed = pyqtSignal(dict)
+    Responsabilités:
+    - Configuration ArUco et détection
+    - Gestion ROI et tracking
+    - Affichage flux avec overlays
+    - Réception signaux de CameraTab (maître)
     
-    def __init__(self, config_manager, camera_manager):
-        super().__init__()
+    Signaux reçus (CameraTab → TargetTab):
+    - camera_opened → _on_camera_changed()
+    - streaming_started → _on_streaming_started()
+    - streaming_stopped → _on_streaming_stopped()
+    
+    Signaux émis (TargetTab → MainWindow):
+    - tracking_started
+    - tracking_stopped
+    - target_detected
+    - status_changed
+    """
+    
+    # Signaux
+    target_detected = pyqtSignal(dict)       # Signal cible détectée
+    tracking_started = pyqtSignal()          # Signal tracking démarré
+    tracking_stopped = pyqtSignal()          # Signal tracking arrêté
+    status_changed = pyqtSignal(dict)        # Signal changement d'état
+    
+    def __init__(self, config_manager, camera_manager, parent=None):
+        super().__init__(parent)
         
-        # Managers principaux
+        # Configuration et managers
         self.config = config_manager
-        self.camera_manager = camera_manager
+        self.camera_manager = camera_manager  # Référence au manager centralisé
         
-        # États internes
+        # État de l'onglet
+        self.is_tracking = False
         self.current_frame = None
-        self.detected_targets = []
-        self.is_tracking_active = False
-        self.roi_detection_enabled = False  # CORRECTION: ROI désactivée par défaut
+        self.current_depth_frame = None
+        self.camera_ready = False
+        self.selected_camera_alias = None
         
-        # Statistiques
+        # Données de tracking
+        self.detected_targets = []
+        self.tracking_history = []
         self.detection_stats = {
             'total_detections': 0,
             'fps': 0.0,
-            'last_update': time.time()
+            'last_detection_time': 0.0
         }
         
-        # Configuration interface
-        self.setup_detection_components()
+        # ORDRE CORRECT :
+        # 1. D'ABORD : Composants de détection
+        self._init_detection_components()
+        
+        # 2. ENSUITE : Interface utilisateur
         self._setup_ui()
-        self._setup_timers()
+        self._connect_internal_signals()
+        
+        # 3. ENFIN : Auto-chargement ArUco (après que tout soit créé)
         self._auto_load_latest_aruco_folder()
         
-        # CORRECTION: Configuration initiale du détecteur SANS ROI
-        self._configure_detector_without_roi()
+        # Timer pour le traitement des frames
+        self.processing_timer = QTimer()
+        self.processing_timer.timeout.connect(self._process_current_frame)
         
-        logger.info("✅ TargetTab initialisé avec détection ArUco libre")
+        # Timer pour vérifier l'état des caméras
+        self.camera_check_timer = QTimer()
+        self.camera_check_timer.timeout.connect(self._check_camera_status)
+        self.camera_check_timer.start(1000)  # Vérification chaque seconde
+        
+        version = self._safe_get_config('ui', 'target_tab.version', '4.4')
+        logger.info(f"🎯 TargetTab v{version} initialisé avec corrections signaux")
+        
+        # Vérification initiale de l'état des caméras
+        self._check_camera_status()
     
-    def setup_detection_components(self):
-        """Configure les composants de détection"""
+    def _init_detection_components(self):
+        """Initialise les composants de détection"""
         try:
-            # Chargement des composants réels
             self.aruco_loader = ArUcoConfigLoader(self.config)
             self.target_detector = TargetDetector(self.config)
             self.roi_manager = ROIManager(self.config)
@@ -123,82 +109,385 @@ class TargetTab(QWidget):
             self.aruco_loader = ArUcoConfigLoader(self.config)
             self.target_detector = TargetDetector(self.config)
             self.roi_manager = ROIManager(self.config)
-
-    def _configure_detector_without_roi(self):
-        """CORRECTION: Configure le détecteur sans ROI au démarrage"""
-        if hasattr(self.target_detector, 'set_roi'):
-            self.target_detector.set_roi(roi=None, enabled=False)
-            logger.info("🎯 Détecteur configuré SANS ROI - détection libre")
-        else:
-            logger.warning("⚠️ Méthode set_roi non disponible sur le détecteur")
-
-    # === MÉTHODES ROI CORRIGÉES ===
     
-    def _start_roi_creation(self, roi_type):
-        """Démarre la création d'une ROI"""
+    def _auto_load_latest_aruco_folder(self):
+        """Charge automatiquement le dernier dossier ArUco - CORRECTION COMPLÈTE"""
         try:
-            # Conversion string → ROIType enum
-            from core.roi_manager import ROIType
-            
-            if roi_type == 'rectangle':
-                roi_enum = ROIType.RECTANGLE
-            elif roi_type == 'polygon':
-                roi_enum = ROIType.POLYGON
-            else:
-                logger.warning(f"Type ROI non supporté: {roi_type}")
+            # CORRECTION: Vérification que l'UI est initialisée
+            if not hasattr(self, 'aruco_status_label') or not hasattr(self, 'markers_count_label'):
+                logger.debug("⚠️ UI ArUco pas encore créée, auto-chargement reporté")
+                # Programmer un retry
+                QTimer.singleShot(500, self._auto_load_latest_aruco_folder)
                 return
+                
+            # CORRECTION: Vérification méthode disponible
+            if not hasattr(self.aruco_loader, 'get_latest_aruco_folder'):
+                logger.warning("⚠️ Méthode get_latest_aruco_folder non disponible")
+                self.aruco_status_label.setText("⚠️ Auto-chargement non disponible")
+                self.aruco_status_label.setStyleSheet("QLabel { color: orange; }")
+                return
+                
+            # Recherche du dernier dossier
+            latest_folder = self.aruco_loader.get_latest_aruco_folder()
             
-            success = self.roi_manager.start_roi_creation(roi_enum)
-            if success:
-                logger.info(f"📐 Création ROI {roi_type} démarrée")
-                # NOTE: La détection continue NORMALEMENT pendant la création
+            if latest_folder:
+                logger.info(f"🎯 Auto-chargement ArUco: {latest_folder}")
+                self._scan_aruco_folder(latest_folder)
             else:
-                logger.warning("⚠️ Impossible de démarrer création ROI")
-            
+                logger.info("ℹ️ Aucun dossier ArUco trouvé pour auto-chargement")
+                
+                # Interface mise à jour même sans dossier
+                self.aruco_status_label.setText("⚠️ Aucun dossier ArUco trouvé")
+                self.aruco_status_label.setStyleSheet("QLabel { color: orange; }")
+                self.markers_count_label.setText("Marqueurs: 0 détectés")
+                self.markers_count_label.setStyleSheet("QLabel { color: orange; }")
+                
         except Exception as e:
-            logger.error(f"❌ Erreur création ROI: {e}")
+            logger.warning(f"⚠️ Erreur auto-chargement ArUco: {e}")
+            
+            try:
+                self.aruco_status_label.setText("❌ Erreur auto-chargement")
+                self.aruco_status_label.setStyleSheet("QLabel { color: red; }")
+            except:
+                pass
     
-    def _clear_all_rois(self):
-        """Efface toutes les ROI et désactive le filtrage ROI"""
+    def _safe_get_config(self, section: str, key: str, default=None):
+        """Accès sécurisé à la configuration"""
         try:
-            roi_count = len(self.roi_manager.rois)
-            self.roi_manager.rois.clear()
-            
-            # CORRECTION: Désactiver explicitement le filtrage ROI
-            self.roi_detection_enabled = False
-            if hasattr(self.target_detector, 'set_roi'):
-                self.target_detector.set_roi(roi=None, enabled=False)
-            
-            logger.info(f"🗑️ {roi_count} ROI supprimées - détection libre rétablie")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur suppression ROI: {e}")
-
-    def _toggle_roi_detection(self):
-        """Active/désactive le filtrage de détection par ROI"""
-        if not self.roi_manager.rois:
-            QMessageBox.information(self, "ROI", "Aucune ROI définie pour filtrer la détection")
+            return self.config.get(section, key, default) if hasattr(self.config, 'get') else default
+        except Exception:
+            return default
+    
+    def _setup_ui(self):
+        """Configure l'interface utilisateur simplifiée"""
+        main_layout = QHBoxLayout(self)
+        
+        # Panneau de contrôle (gauche) - Focus détection
+        control_panel = self._create_control_panel()
+        control_width = self._safe_get_config('ui', 'target_tab.layout.control_panel_width', 320)
+        control_panel.setMaximumWidth(control_width)
+        
+        # Zone d'affichage (droite) - Flux caméra + overlays
+        display_area = self._create_display_area()
+        
+        main_layout.addWidget(control_panel)
+        main_layout.addWidget(display_area, 1)
+    
+    def _create_control_panel(self):
+        """Crée le panneau de contrôle focalisé sur la détection"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        
+        # 1. État de la caméra (détection automatique)
+        camera_status_group = self._create_camera_status_group()
+        layout.addWidget(camera_status_group)
+        
+        # 2. Configuration ArUco
+        aruco_group = self._create_aruco_config_group()
+        layout.addWidget(aruco_group)
+        
+        # 3. Types de détection
+        detection_types_group = self._create_detection_types_group()
+        layout.addWidget(detection_types_group)
+        
+        # 4. Outils ROI
+        roi_tools_group = self._create_roi_tools_group()
+        layout.addWidget(roi_tools_group)
+        
+        # 5. Contrôles tracking
+        tracking_controls_group = self._create_tracking_controls_group()
+        layout.addWidget(tracking_controls_group)
+        
+        # 6. Statistiques
+        stats_group = self._create_statistics_group()
+        layout.addWidget(stats_group)
+        
+        layout.addStretch()  # Push vers le haut
+        
+        return panel
+    
+    def _create_camera_status_group(self):
+        """Groupe d'état de la caméra (lecture seule)"""
+        group = QGroupBox("📷 État Caméra")
+        layout = QVBoxLayout(group)
+        
+        self.camera_status_label = QLabel("❌ Aucune caméra active")
+        self.camera_status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
+        
+        self.camera_alias_label = QLabel("Alias: N/A")
+        self.camera_alias_label.setStyleSheet("QLabel { color: gray; }")
+        
+        info_label = QLabel("ℹ️ Géré par l'onglet Caméra")
+        info_label.setStyleSheet("QLabel { color: blue; font-style: italic; }")
+        
+        layout.addWidget(self.camera_status_label)
+        layout.addWidget(self.camera_alias_label)
+        layout.addWidget(info_label)
+        
+        return group
+    
+    def _create_aruco_config_group(self):
+        """Groupe de configuration ArUco"""
+        group = QGroupBox("🎯 Configuration ArUco")
+        layout = QVBoxLayout(group)
+        
+        # Sélection dossier
+        folder_layout = QHBoxLayout()
+        self.select_folder_btn = QPushButton("📁 Sélectionner Dossier")
+        self.select_folder_btn.clicked.connect(self._select_aruco_folder)
+        self.rescan_btn = QPushButton("🔄")
+        self.rescan_btn.setMaximumWidth(30)
+        self.rescan_btn.clicked.connect(self._rescan_current_folder)
+        
+        folder_layout.addWidget(self.select_folder_btn)
+        folder_layout.addWidget(self.rescan_btn)
+        
+        # Status
+        self.aruco_status_label = QLabel("Dossier: Non sélectionné")
+        self.markers_count_label = QLabel("Marqueurs: 0 détectés")
+        
+        layout.addLayout(folder_layout)
+        layout.addWidget(self.aruco_status_label)
+        layout.addWidget(self.markers_count_label)
+        
+        return group
+    
+    def _create_detection_types_group(self):
+        """Groupe des types de détection"""
+        group = QGroupBox("🔍 Types de Détection")
+        layout = QVBoxLayout(group)
+        
+        self.aruco_check = QCheckBox("ArUco Markers")
+        self.aruco_check.setChecked(True)
+        self.aruco_check.toggled.connect(self._on_detection_type_changed)
+        
+        self.reflective_check = QCheckBox("Marqueurs Réfléchissants")
+        self.reflective_check.setChecked(False)
+        self.reflective_check.toggled.connect(self._on_detection_type_changed)
+        
+        self.led_check = QCheckBox("LEDs Colorées")
+        self.led_check.setChecked(False)
+        self.led_check.toggled.connect(self._on_detection_type_changed)
+        
+        layout.addWidget(self.aruco_check)
+        layout.addWidget(self.reflective_check)
+        layout.addWidget(self.led_check)
+        
+        return group
+    
+    def _create_roi_tools_group(self):
+        """Groupe des outils ROI"""
+        group = QGroupBox("📐 Outils ROI")
+        layout = QVBoxLayout(group)
+        
+        roi_buttons_layout = QHBoxLayout()
+        
+        self.roi_rect_btn = QPushButton("⬜")
+        self.roi_rect_btn.setToolTip("Rectangle")
+        self.roi_polygon_btn = QPushButton("⬟")
+        self.roi_polygon_btn.setToolTip("Polygone")
+        self.clear_roi_btn = QPushButton("🗑️")
+        self.clear_roi_btn.setToolTip("Effacer ROI")
+        
+        roi_buttons_layout.addWidget(self.roi_rect_btn)
+        roi_buttons_layout.addWidget(self.roi_polygon_btn)
+        roi_buttons_layout.addWidget(self.clear_roi_btn)
+        
+        self.roi_status_label = QLabel("ROI: Aucune")
+        
+        layout.addLayout(roi_buttons_layout)
+        layout.addWidget(self.roi_status_label)
+        
+        return group
+    
+    def _create_tracking_controls_group(self):
+        """Groupe des contrôles de tracking"""
+        group = QGroupBox("🎬 Contrôles Tracking")
+        layout = QVBoxLayout(group)
+        
+        # Boutons start/stop
+        buttons_layout = QHBoxLayout()
+        self.start_tracking_btn = QPushButton("▶️ Démarrer")
+        self.start_tracking_btn.clicked.connect(self._start_tracking)
+        self.start_tracking_btn.setEnabled(False)
+        
+        self.stop_tracking_btn = QPushButton("⏹️ Arrêter")
+        self.stop_tracking_btn.clicked.connect(self._stop_tracking)
+        self.stop_tracking_btn.setEnabled(False)
+        
+        buttons_layout.addWidget(self.start_tracking_btn)
+        buttons_layout.addWidget(self.stop_tracking_btn)
+        
+        # Paramètres
+        fps_layout = QHBoxLayout()
+        fps_layout.addWidget(QLabel("FPS Cible:"))
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setRange(1, 60)
+        self.fps_spin.setValue(30)
+        fps_layout.addWidget(self.fps_spin)
+        fps_layout.addWidget(QLabel("fps"))
+        
+        confidence_layout = QHBoxLayout()
+        confidence_layout.addWidget(QLabel("Confiance:"))
+        self.confidence_spin = QSpinBox()
+        self.confidence_spin.setRange(1, 100)
+        self.confidence_spin.setValue(80)
+        self.confidence_spin.setSuffix("%")
+        confidence_layout.addWidget(self.confidence_spin)
+        
+        # Zoom
+        zoom_layout = QHBoxLayout()
+        zoom_layout.addWidget(QLabel("Zoom:"))
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(50, 200)
+        self.zoom_slider.setValue(100)
+        zoom_layout.addWidget(self.zoom_slider)
+        zoom_layout.addWidget(QLabel("100%"))
+        
+        layout.addLayout(buttons_layout)
+        layout.addLayout(fps_layout)
+        layout.addLayout(confidence_layout)
+        layout.addLayout(zoom_layout)
+        
+        return group
+    
+    def _create_statistics_group(self):
+        """Groupe des statistiques"""
+        group = QGroupBox("📊 Statistiques")
+        layout = QVBoxLayout(group)
+        
+        self.detections_count_label = QLabel("Détections: 0")
+        self.fps_label = QLabel("FPS: 0.0")
+        self.processing_time_label = QLabel("Temps: 0ms")
+        
+        layout.addWidget(self.detections_count_label)
+        layout.addWidget(self.fps_label)
+        layout.addWidget(self.processing_time_label)
+        
+        return group
+    
+    def _create_display_area(self):
+        """Zone d'affichage vidéo avec overlays"""
+        self.camera_display = QLabel("En attente du flux caméra...")
+        self.camera_display.setStyleSheet("QLabel { border: 1px solid gray; background: black; color: white; }")
+        self.camera_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.camera_display.setMinimumSize(640, 480)
+        
+        return self.camera_display
+    
+    # === MÉTHODES DE CONNEXION SIGNAUX ===
+    
+    def _connect_internal_signals(self):
+        """Connecte les signaux internes de l'onglet"""
+        # Connexions déjà établies dans _create_*_group()
+        pass
+    
+    # === SLOTS POUR SIGNAUX EXTERNES (CameraTab → TargetTab) ===
+    
+    def _on_camera_changed(self, camera_alias: str):
+        """Slot appelé quand une caméra est sélectionnée/ouverte"""
+        logger.info(f"🎥 Signal caméra changée reçu: {camera_alias}")
+        
+        # Validation caméra disponible
+        if not self.camera_manager.is_camera_open(camera_alias):
+            logger.warning(f"⚠️ Caméra {camera_alias} non disponible")
+            self.camera_ready = False
+            self.selected_camera_alias = None
+            self._update_camera_status()
             return
         
-        self.roi_detection_enabled = not self.roi_detection_enabled
-        
-        if self.roi_detection_enabled:
-            # Appliquer la première ROI active comme filtre
-            active_rois = [roi for roi in self.roi_manager.rois if hasattr(roi, 'state') and roi.state.value != 'INACTIVE']
-            if active_rois:
-                selected_roi = active_rois[0]
-                if hasattr(self.target_detector, 'set_roi'):
-                    self.target_detector.set_roi(roi=selected_roi, enabled=True)
-                logger.info(f"🔍 Détection limitée à ROI: {selected_roi}")
-            else:
-                self.roi_detection_enabled = False
-                logger.warning("⚠️ Aucune ROI active - filtrage désactivé")
+        # Mise à jour état
+        self.selected_camera_alias = camera_alias
+        self.camera_ready = True
+        self._update_camera_status()
+    
+    def _update_camera_status(self):
+        """Met à jour l'affichage du statut caméra"""
+        if self.camera_ready and self.selected_camera_alias:
+            self.camera_status_label.setText(f"✅ Caméra: {self.selected_camera_alias}")
+            self.camera_status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
+            self.camera_alias_label.setText(f"Alias: {self.selected_camera_alias}")
+            self.camera_alias_label.setStyleSheet("QLabel { color: black; }")
+            
+            # Activation des boutons
+            self.start_tracking_btn.setEnabled(not self.is_tracking)
         else:
-            # Désactiver filtrage ROI
-            if hasattr(self.target_detector, 'set_roi'):
-                self.target_detector.set_roi(roi=None, enabled=False)
-            logger.info("🔍 Détection libre - ROI désactivée")
-
+            self.camera_status_label.setText("❌ Aucune caméra active")
+            self.camera_status_label.setStyleSheet("QLabel { color: red; font-weight: bold; }")
+            self.camera_alias_label.setText("Alias: N/A")
+            self.camera_alias_label.setStyleSheet("QLabel { color: gray; }")
+            
+            # Désactivation des boutons
+            self.start_tracking_btn.setEnabled(False)
+            if self.is_tracking:
+                self._stop_tracking()
+    
+    def _on_streaming_started(self):
+        """Slot appelé quand le streaming démarre"""
+        logger.info("🎬 Signal streaming démarré reçu")
+        
+        # Démarrer le traitement des frames si caméra prête
+        if self.camera_ready and self.selected_camera_alias:
+            fps_target = self.fps_spin.value()
+            interval_ms = int(1000 / fps_target)
+            self.processing_timer.start(interval_ms)
+            logger.info(f"🎬 Traitement frames démarré à {fps_target}fps")
+    
+    def _on_streaming_stopped(self):
+        """Slot appelé quand le streaming s'arrête"""
+        logger.info("⏹️ Signal streaming arrêté reçu")
+        
+        # Arrêt du processing
+        self.processing_timer.stop()
+        if self.is_tracking:
+            self._stop_tracking()
+        
+        # Reset affichage
+        self.camera_display.setText("En attente du flux caméra...")
+        
+        # Force une vérification de l'état
+        self._check_camera_status()
+    
+    # === MÉTHODES DE TRAITEMENT ===
+    
+    def _process_current_frame(self):
+        """MÉTHODE CORRIGÉE - Traite la frame courante avec optimisations performance"""
+        if not self.camera_ready or not self.selected_camera_alias:
+            return
+        
+        start_time = time.time()
+        
+        try:
+            # Récupération frame avec timeout
+            success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
+            
+            if success and frame is not None:
+                self.current_frame = frame.copy()
+                self.current_depth_frame = depth_frame
+                
+                # Traitement de détection SEULEMENT si tracking actif
+                if self.is_tracking:
+                    # Skip detection si frame précédente pas encore traitée
+                    if not hasattr(self, '_processing_detection') or not self._processing_detection:
+                        self._detect_targets_in_frame()
+                
+                # CORRECTION: Appel correct de la méthode d'affichage
+                self._update_display()  # Au lieu de self._update_video_display()
+                
+                # Mesure performance réelle
+                processing_time = (time.time() - start_time) * 1000  # ms
+                if processing_time > 33:  # Plus de 33ms
+                    logger.debug(f"⚠️ Frame lente: {processing_time:.1f}ms")
+                    
+            else:
+                if not self.camera_manager.is_camera_open(self.selected_camera_alias):
+                    logger.warning(f"⚠️ Caméra {self.selected_camera_alias} non disponible")
+                    self._check_camera_status()
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur traitement frame: {e}")
+            self._check_camera_status()
+    
     def _detect_targets_in_frame(self):
         """Effectue la détection des cibles dans la frame courante"""
         if self.current_frame is None:
@@ -211,7 +500,7 @@ class TargetTab(QWidget):
         self._processing_detection = True
 
         try:
-            # CORRECTION: Utilisation directe sans modification de ROI
+            # Utilisation de detect_all_targets
             detected_results = self.target_detector.detect_all_targets(self.current_frame)
             
             # Conversion des résultats pour compatibilité
@@ -222,8 +511,7 @@ class TargetTab(QWidget):
                 'frame_size': self.current_frame.shape[:2],
                 'detection_count': len(detected_results),
                 'detection_time': time.time(),
-                'target_types': [result.target_type.value for result in detected_results] if detected_results else [],
-                'roi_enabled': self.roi_detection_enabled
+                'target_types': [result.target_type.value for result in detected_results] if detected_results else []
             }
             
             # Mise à jour des statistiques
@@ -241,389 +529,150 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur détection: {e}")
         finally:
             self._processing_detection = False
-
-    def _update_detection_stats(self, detection_info):
-        """Met à jour les statistiques de détection"""
-        try:
-            current_time = time.time()
-            time_diff = current_time - self.detection_stats['last_update']
-            
-            if time_diff > 0:
-                self.detection_stats['fps'] = 1.0 / time_diff
-            
-            self.detection_stats['total_detections'] += detection_info['detection_count']
-            self.detection_stats['last_update'] = current_time
-            
-            # Log périodique
-            if self.detection_stats['total_detections'] % 100 == 0 and detection_info['detection_count'] > 0:
-                fps_str = f"{self.detection_stats['fps']:.1f}"
-                roi_status = "avec ROI" if detection_info.get('roi_enabled', False) else "libre"
-                logger.info(f"📊 Détection {roi_status}: {detection_info['detection_count']} cibles, {fps_str} FPS")
-                
-        except Exception as e:
-            logger.error(f"❌ Erreur mise à jour stats: {e}")
-
-    # === CRÉATION UI SIMPLIFIÉE ===
     
-    def _setup_ui(self):
-        """Configure l'interface utilisateur simplifiée"""
-        main_layout = QHBoxLayout(self)
-        
-        # Panneau de contrôle (gauche)
-        control_panel = self._create_control_panel()
-        control_width = self._safe_get_config('ui', 'target_tab.layout.control_panel_width', 320)
-        control_panel.setMaximumWidth(control_width)
-        
-        # Zone d'affichage (droite)
-        display_area = self._create_display_area()
-        
-        main_layout.addWidget(control_panel)
-        main_layout.addWidget(display_area, 1)
-
-    def _create_control_panel(self):
-        """Crée le panneau de contrôle focalisé sur la détection"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        
-        # 1. État de la caméra
-        camera_status_group = self._create_camera_status_group()
-        layout.addWidget(camera_status_group)
-        
-        # 2. Configuration ArUco
-        aruco_group = self._create_aruco_config_group()
-        layout.addWidget(aruco_group)
-        
-        # 3. Types de détection
-        detection_types_group = self._create_detection_types_group()
-        layout.addWidget(detection_types_group)
-        
-        # 4. CORRECTION: Outils ROI avec état clair
-        roi_tools_group = self._create_roi_tools_group_corrected()
-        layout.addWidget(roi_tools_group)
-        
-        # 5. Statistiques
-        stats_group = self._create_stats_group()
-        layout.addWidget(stats_group)
-        
-        layout.addStretch()
-        return panel
-
-    def _create_roi_tools_group_corrected(self):
-        """CORRECTION: Groupe ROI avec état de filtrage clair"""
-        group = QGroupBox("🔍 Régions d'Intérêt (ROI)")
-        layout = QVBoxLayout(group)
-        
-        # État du filtrage ROI
-        status_layout = QHBoxLayout()
-        self.roi_status_label = QLabel("Détection: Libre (sans ROI)")
-        self.roi_status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
-        status_layout.addWidget(self.roi_status_label)
-        layout.addLayout(status_layout)
-        
-        # Boutons de création ROI
-        creation_layout = QHBoxLayout()
-        
-        self.create_rect_btn = QPushButton("Rectangle")
-        self.create_rect_btn.clicked.connect(lambda: self._start_roi_creation('rectangle'))
-        
-        self.create_poly_btn = QPushButton("Polygone")
-        self.create_poly_btn.clicked.connect(lambda: self._start_roi_creation('polygon'))
-        
-        creation_layout.addWidget(self.create_rect_btn)
-        creation_layout.addWidget(self.create_poly_btn)
-        layout.addLayout(creation_layout)
-        
-        # Contrôles ROI
-        controls_layout = QHBoxLayout()
-        
-        self.toggle_roi_detection_btn = QPushButton("Activer filtrage ROI")
-        self.toggle_roi_detection_btn.clicked.connect(self._toggle_roi_detection)
-        self.toggle_roi_detection_btn.setEnabled(False)  # Désactivé au départ
-        
-        self.clear_rois_btn = QPushButton("Effacer tout")
-        self.clear_rois_btn.clicked.connect(self._clear_all_rois)
-        
-        controls_layout.addWidget(self.toggle_roi_detection_btn)
-        controls_layout.addWidget(self.clear_rois_btn)
-        layout.addLayout(controls_layout)
-        
-        return group
-
-    def _create_camera_status_group(self):
-        """Groupe état caméra avec détection automatique"""
-        group = QGroupBox("📹 État Caméra")
-        layout = QVBoxLayout(group)
-        
-        # Status caméra
-        self.camera_status_label = QLabel("État: Détection...")
-        layout.addWidget(self.camera_status_label)
-        
-        # Bouton refresh manuel
-        self.refresh_camera_btn = QPushButton("🔄 Actualiser")
-        self.refresh_camera_btn.clicked.connect(self._refresh_camera_status)
-        layout.addWidget(self.refresh_camera_btn)
-        
-        return group
-
-    def _create_aruco_config_group(self):
-        """Groupe configuration ArUco"""
-        group = QGroupBox("🎯 Configuration ArUco")
-        layout = QVBoxLayout(group)
-        
-        # Sélection dossier
-        folder_layout = QHBoxLayout()
-        self.select_aruco_btn = QPushButton("📁 Dossier")
-        self.select_aruco_btn.clicked.connect(self._select_aruco_folder)
-        self.aruco_folder_label = QLabel("Aucun dossier")
-        
-        folder_layout.addWidget(self.select_aruco_btn)
-        folder_layout.addWidget(self.aruco_folder_label, 1)
-        layout.addLayout(folder_layout)
-        
-        # Statistiques marqueurs
-        self.aruco_stats_label = QLabel("Marqueurs: 0 détecté")
-        layout.addWidget(self.aruco_stats_label)
-        
-        # Boutons d'action
-        actions_layout = QHBoxLayout()
-        self.rescan_btn = QPushButton("🔄 Re-scan")
-        self.rescan_btn.clicked.connect(self._rescan_aruco_folder)
-        self.rescan_btn.setEnabled(False)
-        
-        self.debug_btn = QPushButton("🔍 Debug")
-        self.debug_btn.clicked.connect(self._show_aruco_debug_info)
-        self.debug_btn.setEnabled(False)
-        
-        actions_layout.addWidget(self.rescan_btn)
-        actions_layout.addWidget(self.debug_btn)
-        layout.addLayout(actions_layout)
-        
-        return group
-
-    def _create_detection_types_group(self):
-        """Groupe types de détection"""
-        group = QGroupBox("🔍 Types de Détection")
-        layout = QVBoxLayout(group)
-        
-        # Checkboxes pour chaque type
-        self.aruco_check = QCheckBox("Marqueurs ArUco")
-        self.aruco_check.setChecked(True)
-        self.aruco_check.toggled.connect(self._on_detection_type_changed)
-        
-        self.reflective_check = QCheckBox("Marqueurs Réfléchissants")
-        self.reflective_check.setChecked(False)
-        self.reflective_check.toggled.connect(self._on_detection_type_changed)
-        
-        self.led_check = QCheckBox("Marqueurs LED")
-        self.led_check.setChecked(False)
-        self.led_check.toggled.connect(self._on_detection_type_changed)
-        
-        layout.addWidget(self.aruco_check)
-        layout.addWidget(self.reflective_check)
-        layout.addWidget(self.led_check)
-        
-        return group
-
-    def _create_stats_group(self):
-        """Groupe statistiques"""
-        group = QGroupBox("📊 Statistiques")
-        layout = QVBoxLayout(group)
-        
-        self.detections_count_label = QLabel("Détections: 0")
-        self.fps_label = QLabel("FPS: 0.0")
-        self.processing_time_label = QLabel("Temps: 0ms")
-        
-        layout.addWidget(self.detections_count_label)
-        layout.addWidget(self.fps_label)
-        layout.addWidget(self.processing_time_label)
-        
-        return group
-
-    def _create_display_area(self):
-        """Zone d'affichage vidéo avec overlays"""
-        display_widget = QLabel("Flux vidéo avec détections")
-        display_widget.setStyleSheet("QLabel { border: 1px solid gray; background: black; color: white; }")
-        display_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        display_widget.setMinimumSize(640, 480)
-        
-        return display_widget
-
-    # === MÉTHODES UTILITAIRES ===
-    
-    def _safe_get_config(self, section: str, key: str, default=None):
-        """Accès sécurisé à la configuration"""
-        try:
-            return self.config.get(section, key, default) if hasattr(self.config, 'get') else default
-        except Exception:
-            return default
-
-    def _setup_timers(self):
-        """Configure les timers pour les mises à jour"""
-        # Timer de détection ET affichage
-        self.detection_timer = QTimer()
-        self.detection_timer.timeout.connect(self._process_frame)
-        self.detection_timer.start(50)  # 20 FPS
-        
-        # Timer de mise à jour UI
-        self.ui_update_timer = QTimer()
-        self.ui_update_timer.timeout.connect(self._update_ui_stats)
-        self.ui_update_timer.start(1000)  # 1 Hz
-
-    def _process_frame(self):
-        """Traite une frame : détection + affichage"""
-        # 1. Détection des cibles
-        self._detect_targets_in_frame()
-        
-        # 2. Mise à jour de l'affichage vidéo
-        self._update_video_display()
-
-    def _update_ui_stats(self):
-        """Met à jour les statistiques dans l'interface"""
-        try:
-            self.detections_count_label.setText(f"Détections: {self.detection_stats['total_detections']}")
-            self.fps_label.setText(f"FPS: {self.detection_stats['fps']:.1f}")
-            
-            # Mise à jour statut ROI
-            if self.roi_detection_enabled:
-                self.roi_status_label.setText("Détection: Filtrée par ROI")
-                self.roi_status_label.setStyleSheet("QLabel { color: orange; font-weight: bold; }")
-                self.toggle_roi_detection_btn.setText("Désactiver filtrage ROI")
-            else:
-                self.roi_status_label.setText("Détection: Libre (sans ROI)")
-                self.roi_status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
-                self.toggle_roi_detection_btn.setText("Activer filtrage ROI")
-            
-            # Activation bouton ROI selon disponibilité
-            self.toggle_roi_detection_btn.setEnabled(len(self.roi_manager.rois) > 0)
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur mise à jour UI stats: {e}")
-
-    # === MÉTHODES ARUCO (simplifiées) ===
-    
-    def _auto_load_latest_aruco_folder(self):
-        """Charge automatiquement le dernier dossier ArUco disponible"""
-        try:
-            latest_folder = self.aruco_loader.get_latest_aruco_folder()
-            if latest_folder:
-                logger.info(f"🎯 Auto-chargement dossier ArUco: {latest_folder}")
-                self._scan_aruco_folder(latest_folder)
-            else:
-                logger.info("ℹ️ Aucun dossier ArUco trouvé pour auto-chargement")
-        except Exception as e:
-            logger.warning(f"⚠️ Erreur auto-chargement ArUco: {e}")
-
-    def _select_aruco_folder(self):
-        """Sélection du dossier ArUco"""
-        current_folder = self._safe_get_config('aruco', 'markers_folder', '.')
-        
-        folder = QFileDialog.getExistingDirectory(
-            self, 
-            "Sélectionner le dossier des marqueurs ArUco",
-            current_folder
-        )
-        
-        if folder:
-            self._scan_aruco_folder(folder)
-
-    def _scan_aruco_folder(self, folder_path):
-        """Scan du dossier ArUco sélectionné"""
-        try:
-            folder_path = Path(folder_path)
-            detected_markers = self.aruco_loader.scan_aruco_folder(folder_path)
-            valid_count, issues = self.aruco_loader.validate_markers()
-            
-            # Mise à jour affichage
-            self.aruco_folder_label.setText(f"📁 {folder_path.name}")
-            self.aruco_folder_label.setStyleSheet("QLabel { color: green; }")
-            
-            if detected_markers:
-                dict_type = self.aruco_loader._detect_common_dictionary()
-                self.aruco_stats_label.setText(f"Marqueurs: {len(detected_markers)} détectés ({dict_type})")
-                
-                # CORRECTION: Mise à jour du détecteur avec le bon dictionnaire
-                if hasattr(self.target_detector, 'update_aruco_config'):
-                    self.target_detector.update_aruco_config(dict_type)
-                    logger.info(f"🎯 Détecteur ArUco mis à jour: {dict_type}")
-                elif hasattr(self.target_detector, 'aruco_config'):
-                    # Fallback : mise à jour manuelle + réinitialisation
-                    self.target_detector.aruco_config['dictionary_type'] = dict_type
-                    if hasattr(self.target_detector, 'force_reinit_aruco'):
-                        self.target_detector.force_reinit_aruco()
-                    elif hasattr(self.target_detector, '_init_aruco_detector'):
-                        self.target_detector._init_aruco_detector()
-                    logger.info(f"🎯 Détecteur ArUco réinitialisé: {dict_type}")
-                else:
-                    logger.warning("⚠️ Impossible de mettre à jour le dictionnaire ArUco")
-            else:
-                self.aruco_stats_label.setText("Marqueurs: 0 détecté")
-                self.aruco_stats_label.setStyleSheet("QLabel { color: orange; }")
-            
-            if issues:
-                logger.warning(f"⚠️ Problèmes détectés: {'; '.join(issues[:3])}")
-            
-            # Activation boutons
-            self.rescan_btn.setEnabled(True)
-            self.debug_btn.setEnabled(True)
-            
-            logger.info(f"✅ ArUco: {len(detected_markers)} marqueurs détectés ({valid_count} valides)")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur scan ArUco: {e}")
-            self.aruco_folder_label.setText("❌ Erreur de scan")
-            self.aruco_folder_label.setStyleSheet("QLabel { color: red; }")
-
-    def _rescan_aruco_folder(self):
-        """Re-scan du dossier ArUco"""
-        try:
-            if hasattr(self.aruco_loader, 'folder_path') and self.aruco_loader.folder_path:
-                folder_path = str(self.aruco_loader.folder_path)
-                logger.info(f"🔄 Re-scan ArUco: {folder_path}")
-                self._scan_aruco_folder(folder_path)
-            else:
-                logger.warning("⚠️ Aucun dossier ArUco à rescanner")
-                QMessageBox.information(self, "Re-scan", "Aucun dossier ArUco sélectionné à rescanner")
-        except Exception as e:
-            logger.error(f"❌ Erreur re-scan ArUco: {e}")
-            QMessageBox.warning(self, "Erreur", f"Erreur lors du re-scan:\n{e}")
-
-    def _show_aruco_debug_info(self):
-        """Affiche les informations de débogage ArUco"""
-        if not hasattr(self.aruco_loader, 'detected_markers') or not self.aruco_loader.detected_markers:
-            QMessageBox.information(self, "Debug ArUco", "Aucun marqueur détecté à analyser")
+    def _update_display(self):
+        """MÉTHODE CORRIGÉE - Met à jour l'affichage avec la frame et les overlays"""
+        if self.current_frame is None:
             return
         
-        debug_info = []
-        debug_info.append("=== INFORMATIONS DEBUG ARUCO ===\n")
+        try:
+            display_frame = self.current_frame.copy()
+            
+            # Ajout des overlays
+            self._draw_overlays(display_frame)
+            
+            # Conversion pour affichage Qt
+            height, width, channel = display_frame.shape
+            bytes_per_line = 3 * width
+            q_image = QImage(display_frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).rgbSwapped()
+            
+            # Application du zoom
+            zoom_factor = self.zoom_slider.value() / 100.0
+            if zoom_factor != 1.0:
+                q_image = q_image.scaled(int(width * zoom_factor), int(height * zoom_factor), 
+                                       Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            
+            pixmap = QPixmap.fromImage(q_image)
+            self.camera_display.setPixmap(pixmap)
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur affichage: {e}")
+    
+    def _draw_overlays(self, frame):
+        """Dessine les overlays sur la frame"""
+        if not hasattr(self, 'detected_targets'):
+            return
         
-        # Informations générales
-        debug_info.append(f"Dossier: {self.aruco_loader.folder_path}")
-        debug_info.append(f"Marqueurs détectés: {len(self.aruco_loader.detected_markers)}")
-        debug_info.append(f"Dictionnaire détecté: {self.aruco_loader._detect_common_dictionary()}\n")
+        # ROI actives
+        for roi in self.roi_manager.rois:
+            color = (0, 255, 255)  # Jaune
+            thickness = 2
+            # Dessiner selon le type de ROI (rectangle, polygone, etc.)
+            # Code de dessin ROI à implémenter
         
-        # État détection
-        debug_info.append(f"ROI activée: {self.roi_detection_enabled}")
-        debug_info.append(f"Détections totales: {self.detection_stats['total_detections']}")
-        debug_info.append(f"FPS: {self.detection_stats['fps']:.1f}\n")
-        
-        # Validation
-        valid_count, issues = self.aruco_loader.validate_markers()
-        debug_info.append(f"Marqueurs valides: {valid_count}")
-        if issues:
-            debug_info.append("Problèmes détectés:")
-            for issue in issues[:10]:
-                debug_info.append(f"  - {issue}")
-            if len(issues) > 10:
-                debug_info.append(f"  ... et {len(issues) - 10} autres problèmes")
-        
-        # Affichage dans une fenêtre de dialogue
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Debug ArUco")
-        msg.setText("Informations de débogage ArUco:")
-        msg.setDetailedText('\n'.join(debug_info))
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        msg.exec()
-
+        # Détections ArUco
+        if hasattr(self, 'detected_targets') and self.detected_targets:
+            for target in self.detected_targets:
+                # Code de dessin des détections à implémenter
+                pass
+    
+    # === MÉTHODES D'INTERFACE ===
+    
+    def _select_aruco_folder(self):
+        """Sélectionne un dossier ArUco"""
+        folder = QFileDialog.getExistingDirectory(self, "Sélectionner dossier ArUco")
+        if folder:
+            self._scan_aruco_folder(folder)
+    
+    def _scan_aruco_folder(self, folder_path):
+        """Scanne un dossier ArUco - CORRECTION COMPLÈTE"""
+        try:
+            logger.info(f"🔍 Scan dossier ArUco: {folder_path}")
+            
+            # CORRECTION 1: Utilisation de scan_aruco_folder (nom correct)
+            detected_markers = self.aruco_loader.scan_aruco_folder(folder_path)
+            markers_count = len(detected_markers) if detected_markers else 0
+            
+            logger.info(f"📊 Marqueurs détectés: {markers_count}")
+            
+            # CORRECTION 2: Mise à jour de l'interface avec gestion d'erreurs
+            try:
+                folder_name = Path(folder_path).name
+                self.aruco_status_label.setText(f"📁 {folder_name}")
+                self.markers_count_label.setText(f"Marqueurs: {markers_count} détectés")
+                
+                if markers_count > 0:
+                    self.aruco_status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
+                    self.markers_count_label.setStyleSheet("QLabel { color: green; }")
+                    
+                    # CORRECTION 3: Détection du dictionnaire si disponible
+                    try:
+                        if hasattr(self.aruco_loader, '_detect_common_dictionary'):
+                            dict_name = self.aruco_loader._detect_common_dictionary()
+                            logger.info(f"🎯 Dictionnaire détecté: {dict_name}")
+                            
+                            # CORRECTION 4: Mise à jour du détecteur avec méthodes disponibles
+                            if hasattr(self.target_detector, 'update_aruco_dictionary'):
+                                self.target_detector.update_aruco_dictionary(dict_name)
+                                logger.info(f"✅ Détecteur mis à jour: {dict_name}")
+                            elif hasattr(self.target_detector, 'set_aruco_dictionary'):
+                                self.target_detector.set_aruco_dictionary(dict_name)
+                                logger.info(f"✅ Dictionnaire configuré: {dict_name}")
+                            else:
+                                logger.warning(f"⚠️ Impossible de configurer le dictionnaire: {dict_name}")
+                                
+                    except Exception as dict_error:
+                        logger.warning(f"⚠️ Erreur détection dictionnaire: {dict_error}")
+                        
+                else:
+                    self.aruco_status_label.setStyleSheet("QLabel { color: orange; }")
+                    self.markers_count_label.setStyleSheet("QLabel { color: orange; }")
+                    logger.warning(f"⚠️ Aucun marqueur trouvé dans {folder_path}")
+                    
+            except Exception as ui_error:
+                logger.error(f"❌ Erreur mise à jour interface: {ui_error}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur scan ArUco: {e}")
+            
+            # Mise à jour interface en cas d'erreur
+            try:
+                self.aruco_status_label.setText("❌ Erreur scan")
+                self.aruco_status_label.setStyleSheet("QLabel { color: red; }")
+                self.markers_count_label.setText("Marqueurs: Erreur")
+                self.markers_count_label.setStyleSheet("QLabel { color: red; }")
+            except:
+                pass  # Ignore les erreurs d'interface si l'UI n'est pas initialisée
+                
+            # Message utilisateur
+            QMessageBox.warning(self, "Erreur Scan ArUco", 
+                              f"Erreur lors du scan du dossier ArUco:\n\n{str(e)}\n\n"
+                              f"Vérifiez que le dossier contient des fichiers de marqueurs ArUco.")
+    
+    def _rescan_current_folder(self):
+        """Rescanne le dossier ArUco actuel - CORRECTION"""
+        try:
+            # CORRECTION: Vérification robuste du dossier actuel
+            current_folder = None
+            
+            if hasattr(self.aruco_loader, 'folder_path') and self.aruco_loader.folder_path:
+                current_folder = str(self.aruco_loader.folder_path)
+            elif hasattr(self.aruco_loader, 'current_folder') and self.aruco_loader.current_folder:
+                current_folder = self.aruco_loader.current_folder
+                
+            if current_folder:
+                logger.info(f"🔄 Rescan ArUco: {current_folder}")
+                self._scan_aruco_folder(current_folder)
+            else:
+                logger.warning("⚠️ Aucun dossier ArUco à rescanner")
+                QMessageBox.information(self, "Rescan", 
+                                      "Aucun dossier ArUco sélectionné.\n"
+                                      "Veuillez d'abord sélectionner un dossier avec le bouton '📁'.")
+                                      
+        except Exception as e:
+            logger.error(f"❌ Erreur rescan ArUco: {e}")
+            QMessageBox.warning(self, "Erreur", f"Erreur lors du rescan:\n{e}")
+    
     def _on_detection_type_changed(self):
         """Callback changement types de détection"""
         if hasattr(self, 'target_detector'):
@@ -639,100 +688,58 @@ class TargetTab(QWidget):
                           f"LED={self.led_check.isChecked()}")
             except Exception as e:
                 logger.warning(f"⚠️ Erreur mise à jour détection: {e}")
-
-    def _refresh_camera_status(self):
-        """Actualise le statut de la caméra"""
-        if self.camera_manager and hasattr(self.camera_manager, 'is_camera_active'):
-            is_active = self.camera_manager.is_camera_active()
-            if is_active:
-                self.camera_status_label.setText("État: ✅ Caméra active")
-                self.camera_status_label.setStyleSheet("QLabel { color: green; }")
-            else:
-                self.camera_status_label.setText("État: ❌ Caméra inactive")
-                self.camera_status_label.setStyleSheet("QLabel { color: red; }")
-        else:
-            self.camera_status_label.setText("État: ⚠️ Manager non disponible")
-            self.camera_status_label.setStyleSheet("QLabel { color: orange; }")
-
-    # === SLOTS POUR INTÉGRATION ===
     
-    # === CALLBACKS POUR SIGNAUX CAMÉRA ===
+    def _start_tracking(self):
+        """Démarre le tracking"""
+        if not self.camera_ready:
+            QMessageBox.warning(self, "Erreur", "Aucune caméra active")
+            return
+        
+        self.is_tracking = True
+        self.start_tracking_btn.setEnabled(False)
+        self.stop_tracking_btn.setEnabled(True)
+        
+        # Émission du signal
+        self.tracking_started.emit()
+        
+        logger.info("🎯 Tracking démarré")
     
-    def _on_camera_changed(self, camera_alias: str):
-        """Callback quand une nouvelle caméra est ouverte"""
+    def _stop_tracking(self):
+        """Arrête le tracking"""
+        self.is_tracking = False
+        self.start_tracking_btn.setEnabled(self.camera_ready)
+        self.stop_tracking_btn.setEnabled(False)
+        
+        # Émission du signal
+        self.tracking_stopped.emit()
+        
+        logger.info("🛑 Tracking arrêté")
+    
+    def _update_detection_stats(self, detection_info):
+        """Met à jour les statistiques de détection"""
         try:
-            logger.info(f"📹 Nouvelle caméra sélectionnée: {camera_alias}")
+            self.detection_stats['total_detections'] += detection_info.get('detection_count', 0)
             
-            # Vérification disponibilité caméra
-            if not self.camera_manager or not hasattr(self.camera_manager, 'is_camera_open'):
-                logger.warning("⚠️ CameraManager non disponible")
-                return
-                
-            if not self.camera_manager.is_camera_open(camera_alias):
-                logger.warning(f"⚠️ Caméra {camera_alias} non disponible")
-                self.camera_status_label.setText(f"État: ❌ {camera_alias} indisponible")
-                self.camera_status_label.setStyleSheet("QLabel { color: red; }")
-                return
+            # Calcul FPS
+            current_time = time.time()
+            if self.detection_stats['last_detection_time'] > 0:
+                time_diff = current_time - self.detection_stats['last_detection_time']
+                if time_diff > 0:
+                    self.detection_stats['fps'] = 1.0 / time_diff
             
-            # Configuration caméra active
-            self.selected_camera_alias = camera_alias
-            self.camera_ready = True
+            self.detection_stats['last_detection_time'] = current_time
             
-            # Mise à jour interface
-            self.camera_status_label.setText(f"État: ✅ {camera_alias} prête")
-            self.camera_status_label.setStyleSheet("QLabel { color: green; }")
-            
-            logger.info(f"✅ Caméra {camera_alias} configurée pour détection")
+            # Mise à jour de l'affichage
+            self.detections_count_label.setText(f"Détections: {self.detection_stats['total_detections']}")
+            self.fps_label.setText(f"FPS: {self.detection_stats['fps']:.1f}")
             
         except Exception as e:
-            logger.error(f"❌ Erreur changement caméra: {e}")
-            self.camera_status_label.setText("État: ❌ Erreur configuration")
-            self.camera_status_label.setStyleSheet("QLabel { color: red; }")
-
-    def _on_streaming_started(self):
-        """Callback quand le streaming démarre"""
-        try:
-            logger.info("🎬 Streaming démarré - activation détection")
-            
-            # Activation timers de détection si pas déjà actifs
-            if hasattr(self, 'detection_timer') and not self.detection_timer.isActive():
-                self.detection_timer.start(50)  # 20 FPS
-                
-            # Mise à jour statut
-            if hasattr(self, 'camera_status_label'):
-                current_text = self.camera_status_label.text()
-                if "prête" in current_text:
-                    new_text = current_text.replace("prête", "streaming")
-                    self.camera_status_label.setText(new_text)
-                    self.camera_status_label.setStyleSheet("QLabel { color: green; font-weight: bold; }")
-            
-            logger.info("✅ Détection activée avec le streaming")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur activation détection streaming: {e}")
-
-    def _on_streaming_stopped(self):
-        """Callback quand le streaming s'arrête"""
-        try:
-            logger.info("⏹️ Streaming arrêté - pause détection")
-            
-            # Mise à jour statut
-            if hasattr(self, 'camera_status_label'):
-                current_text = self.camera_status_label.text()
-                if "streaming" in current_text:
-                    new_text = current_text.replace("streaming", "prête")
-                    self.camera_status_label.setText(new_text)
-                    self.camera_status_label.setStyleSheet("QLabel { color: green; }")
-            
-            logger.info("✅ Détection en pause (streaming arrêté)")
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur pause détection streaming: {e}")
-
+            logger.error(f"❌ Erreur mise à jour stats: {e}")
+    
     def _check_camera_status(self):
-        """Vérifie et met à jour le statut de la caméra"""
+        """Vérifie périodiquement l'état de la caméra"""
         try:
-            if hasattr(self, 'selected_camera_alias') and self.selected_camera_alias:
+            if self.selected_camera_alias:
                 # Vérification si caméra toujours active
                 if self.camera_manager and hasattr(self.camera_manager, 'is_camera_open'):
                     if self.camera_manager.is_camera_open(self.selected_camera_alias):
@@ -766,15 +773,89 @@ class TargetTab(QWidget):
         except Exception as e:
             logger.error(f"❌ Erreur vérification statut caméra: {e}")
 
+    # === MÉTHODES UTILITAIRES ===
+    
+    def get_current_detection_results(self):
+        """Retourne les résultats de détection actuels"""
+        return getattr(self, 'detected_targets', [])
+    
+    def get_tracking_statistics(self):
+        """Retourne les statistiques de tracking"""
+        return self.detection_stats.copy()
+    
+    def is_camera_ready(self):
+        """Vérifie si une caméra est prête"""
+        return self.camera_ready and self.selected_camera_alias is not None
+    
+    def force_camera_refresh(self):
+        """Force une actualisation de l'état caméra"""
+        self._check_camera_status()
+    
+    # === MÉTHODES DE DEBUGGING ===
+    
+    def _debug_aruco_info(self):
+        """Affiche les informations de débogage ArUco"""
+        debug_info = []
+        debug_info.append(f"Dossier ArUco: {getattr(self.aruco_loader, 'current_folder', 'Non défini')}")
+        debug_info.append(f"Marqueurs chargés: {len(getattr(self.aruco_loader, 'markers', []))}")
+        
+        if hasattr(self.target_detector, 'aruco_detector'):
+            debug_info.append(f"Détecteur initialisé: Oui")
+        else:
+            debug_info.append(f"Détecteur initialisé: Non")
+        
+        debug_info.append(f"Types détection actifs:")
+        debug_info.append(f"  - ArUco: {self.aruco_check.isChecked()}")
+        debug_info.append(f"  - Réfléchissants: {self.reflective_check.isChecked()}")
+        debug_info.append(f"  - LEDs: {self.led_check.isChecked()}")
+        
+        debug_info.append(f"ROI activée: {getattr(self, 'roi_detection_enabled', False)}")
+        debug_info.append(f"Détections totales: {self.detection_stats['total_detections']}")
+        debug_info.append(f"FPS: {self.detection_stats['fps']:.1f}\n")
+        
+        # Validation
+        if hasattr(self.aruco_loader, 'validate_markers'):
+            valid_count, issues = self.aruco_loader.validate_markers()
+            debug_info.append(f"Marqueurs valides: {valid_count}")
+            if issues:
+                debug_info.append("Problèmes détectés:")
+                for issue in issues[:10]:
+                    debug_info.append(f"  - {issue}")
+                if len(issues) > 10:
+                    debug_info.append(f"  ... et {len(issues) - 10} autres problèmes")
+        
+        # Affichage dans une fenêtre de dialogue
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Debug ArUco")
+        msg.setText("Informations de débogage ArUco:")
+        msg.setDetailedText('\n'.join(debug_info))
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+    
+    # === MÉTHODES DE CLEANUP ===
+    
     def closeEvent(self, event):
         """Nettoyage à la fermeture"""
         try:
-            if hasattr(self, 'detection_timer'):
-                self.detection_timer.stop()
-            if hasattr(self, 'ui_update_timer'):
-                self.ui_update_timer.stop()
+            if hasattr(self, 'processing_timer'):
+                self.processing_timer.stop()
+            if hasattr(self, 'camera_check_timer'):
+                self.camera_check_timer.stop()
+            if self.is_tracking:
+                self._stop_tracking()
+                
             logger.info("🛑 TargetTab fermé proprement")
         except Exception as e:
             logger.error(f"❌ Erreur fermeture TargetTab: {e}")
         finally:
             event.accept()
+    
+    def __del__(self):
+        """Destructeur - nettoyage final"""
+        try:
+            if hasattr(self, 'processing_timer') and self.processing_timer.isActive():
+                self.processing_timer.stop()
+            if hasattr(self, 'camera_check_timer') and self.camera_check_timer.isActive():
+                self.camera_check_timer.stop()
+        except:
+            pass  # Ignore les erreurs à la destruction
