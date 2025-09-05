@@ -1,8 +1,8 @@
 {
   "_metadata": {
-    "version": "2.1",
-    "description": "Configuration tracking avec correction chemin ArUco et meilleurs patterns",
-    "last_modified": "2025-01-15T16:00:00Z",
+    "version": "2.2",
+    "description": "Configuration tracking avec corrections mineures et ajouts manquants",
+    "last_modified": "2025-01-15T18:00:00Z",
     "compatibility": "Robot Trajectory Controller v1.6+"
   },
 
@@ -18,7 +18,7 @@
         "./markers"
       ],
       "config_file_name": "markers_config.json",
-      "supported_extensions": [".png", ".jpg", ".jpeg"],
+      "supported_extensions": [".png", ".jpg", ".jpeg", ".bmp"],
       "detection_params": {
         "adaptiveThreshWinSizeMin": 3,
         "adaptiveThreshWinSizeMax": 23,
@@ -121,6 +121,39 @@
         "morphology_kernel": 3,
         "contour_approximation": "simple"
       }
+    },
+
+    "roi_management": {
+      "selection_tools": ["rectangle", "polygon", "circle"],
+      "default_tool": "rectangle",
+      "line_thickness": 2,
+      "colors": {
+        "active_roi": [255, 255, 0],
+        "inactive_roi": [128, 128, 128],
+        "creation_roi": [0, 255, 255],
+        "selected_roi": [255, 0, 255]
+      },
+      "interaction": {
+        "enable_resize_handles": true,
+        "handle_size": 8,
+        "snap_to_grid": false,
+        "grid_size": 10
+      },
+      "auto_save": {
+        "enabled": true,
+        "file_path": "./config/last_session_rois.json",
+        "save_interval_seconds": 30
+      }
+    },
+
+    "fps_target": 30,
+    "confidence_threshold": 0.6,
+    "max_tracking_history": 1000,
+    "detection_timeout_ms": 100,
+    "multi_threading": {
+      "enabled": true,
+      "max_worker_threads": 2,
+      "queue_size": 5
     }
   },
 
@@ -129,26 +162,50 @@
       "control_panel_width": 320,
       "video_display_min_height": 480,
       "controls_bar_height": 60,
-      "status_bar_height": 25
+      "status_bar_height": 25,
+      "splitter_sizes": [320, 800]
     },
     "colors": {
       "aruco_detection": [0, 255, 0],
       "reflective_detection": [255, 0, 0],
       "led_detection": [0, 0, 255],
       "roi_active": [255, 255, 0],
-      "trajectory_line": [255, 165, 0]
+      "roi_inactive": [128, 128, 128],
+      "trajectory_line": [255, 165, 0],
+      "background": [26, 26, 26],
+      "text": [255, 255, 255]
     },
     "fonts": {
-      "marker_id": {"size": 12, "bold": true},
-      "statistics": {"size": 10, "bold": false},
-      "status": {"size": 9, "bold": false}
+      "marker_id": {"family": "Arial", "size": 12, "bold": true},
+      "statistics": {"family": "Courier", "size": 10, "bold": false},
+      "status": {"family": "Arial", "size": 9, "bold": false},
+      "roi_label": {"family": "Arial", "size": 11, "bold": true}
     },
     "display": {
       "show_marker_ids": true,
       "show_confidence": true,
       "show_corners": true,
+      "show_center_cross": true,
+      "show_roi_labels": true,
+      "show_statistics_overlay": false,
       "overlay_transparency": 0.7,
       "line_thickness": 2
+    },
+    "update_intervals": {
+      "video_display_ms": 33,
+      "statistics_update_ms": 1000,
+      "camera_check_ms": 1000,
+      "auto_save_ms": 30000
+    },
+    "controls": {
+      "enable_keyboard_shortcuts": true,
+      "shortcuts": {
+        "start_tracking": "Space",
+        "stop_tracking": "Escape",
+        "toggle_roi_creation": "R",
+        "clear_all_rois": "Ctrl+Del",
+        "export_session": "Ctrl+E"
+      }
     }
   },
 
@@ -164,7 +221,10 @@
       "process_noise": 0.01,
       "measurement_noise": 0.1,
       "initial_error": 1.0,
-      "prediction_steps": 3
+      "prediction_steps": 3,
+      "prediction_weight": 0.8,
+      "update_threshold": 5.0,
+      "max_prediction_frames": 10
     },
     "data_management": {
       "max_history_points": 10000,
@@ -185,7 +245,16 @@
       "extended": ["timestamp", "target_id", "target_type", "x", "y", "z", "confidence", "roi_id", "detection_method"],
       "full": ["timestamp", "target_id", "target_type", "x", "y", "z", "rotation", "confidence", "roi_id", "detection_method", "frame_number", "processing_time"]
     },
-    "default_field_set": "extended"
+    "default_field_set": "extended",
+    "csv_options": {
+      "delimiter": ",",
+      "include_headers": true,
+      "timestamp_format": "ISO8601"
+    },
+    "json_options": {
+      "pretty_print": true,
+      "include_metadata": true
+    }
   },
 
   "ui_labels": {
@@ -229,5 +298,28 @@
       "aruco_folder_empty": "Dossier ArUco vide ou invalide",
       "detection_error": "Erreur de détection"
     }
+  },
+
+  "performance": {
+    "max_memory_usage_mb": 500,
+    "gc_interval_seconds": 60,
+    "profiling": {
+      "enabled": false,
+      "output_file": "./logs/performance.log"
+    },
+    "optimization": {
+      "skip_frames_if_lagging": true,
+      "reduce_quality_under_load": false,
+      "adaptive_detection_params": true
+    }
+  },
+
+  "logging": {
+    "level": "INFO",
+    "file_path": "./logs/target_detection.log",
+    "max_file_size_mb": 50,
+    "backup_count": 5,
+    "log_detections": true,
+    "log_performance": false
   }
 }

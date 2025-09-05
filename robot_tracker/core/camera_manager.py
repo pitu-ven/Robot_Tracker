@@ -1,7 +1,6 @@
-
 # core/camera_manager.py
-# Version 4.6 - Correction signature constructeur RealSenseCamera
-# Modification: Fix _create_camera_instance pour RealSenseCamera(config) au lieu de RealSenseCamera(camera_info, config)
+# Version 4.7 - Ajout méthode get_camera_stats manquante
+# Modification: Ajout des méthodes get_camera_stats et get_global_stats
 
 import logging
 import threading
@@ -233,70 +232,79 @@ class CameraManager:
                 return False
     
     def close_all_cameras(self):
-        """Ferme toutes les caméras"""
+        """Ferme toutes les caméras ouvertes"""
         with self.lock:
-            aliases = list(self.camera_instances.keys())
-            for alias in aliases:
-                self.close_camera(alias)
+            aliases_to_close = list(self.camera_instances.keys())
+            
+            for alias in aliases_to_close:
+                try:
+                    self.close_camera(alias)
+                except Exception as e:
+                    logger.error(f"❌ Erreur fermeture {alias}: {e}")
+            
+            logger.info("✅ Toutes les caméras fermées")
     
     def is_camera_open(self, alias: str) -> bool:
         """Vérifie si une caméra est ouverte"""
         with self.lock:
             return alias in self.camera_instances
     
-    def start_streaming(self) -> bool:
-        """Démarre le streaming pour toutes les caméras ouvertes"""
+    def start_streaming(self):
+        """Démarre le streaming global"""
         with self.lock:
             if self._is_streaming:
-                logger.warning("⚠️ Streaming déjà actif")
+                logger.warning("⚠️ Streaming déjà démarré")
                 return True
             
             if not self.camera_instances:
-                logger.warning("⚠️ Aucune caméra ouverte pour le streaming")
+                logger.warning("⚠️ Aucune caméra ouverte pour streaming")
                 return False
             
             try:
-                # Démarrage du streaming pour chaque caméra
-                for alias, camera_instance in self.camera_instances.items():
-                    if hasattr(camera_instance, 'start_streaming'):
-                        camera_instance.start_streaming()
-                        logger.info(f"✅ Streaming démarré pour {alias}")
+                success_count = 0
+                for alias, instance in self.camera_instances.items():
+                    if hasattr(instance, 'start_streaming'):
+                        if instance.start_streaming():
+                            success_count += 1
+                            logger.info(f"✅ Streaming démarré pour {alias}")
+                    elif hasattr(instance, 'start'):
+                        if instance.start():
+                            success_count += 1
+                            logger.info(f"✅ Streaming démarré pour {alias}")
                 
-                self._is_streaming = True
-                success_msg = self.config.get('core', 'camera_manager.messages.streaming_started', 
-                                            '✅ Streaming global démarré')
-                logger.info(success_msg)
-                return True
-                
+                if success_count > 0:
+                    self._is_streaming = True
+                    logger.info("✅ Streaming global démarré")
+                    return True
+                else:
+                    logger.error("❌ Échec démarrage streaming")
+                    return False
+                    
             except Exception as e:
-                error_msg = self.config.get('core', 'camera_manager.messages.streaming_start_error', 
-                                          'Erreur démarrage streaming: {error}')
-                logger.error(error_msg.format(error=str(e)))
+                logger.error(f"❌ Erreur démarrage streaming: {e}")
                 return False
     
     def stop_streaming(self):
-        """Arrête le streaming pour toutes les caméras - Méthode attendue par main_window.py"""
+        """Arrête le streaming global"""
         with self.lock:
             if not self._is_streaming:
-                logger.debug("⚠️ Streaming déjà arrêté")
-                return
+                return True
             
             try:
-                # Arrêt du streaming pour chaque caméra
-                for alias, camera_instance in self.camera_instances.items():
-                    if hasattr(camera_instance, 'stop_streaming'):
-                        camera_instance.stop_streaming()
-                        logger.info(f"✅ Streaming arrêté pour {alias}")
+                # Arrêter le streaming pour chaque caméra
+                for alias, instance in self.camera_instances.items():
+                    if hasattr(instance, 'stop_streaming'):
+                        instance.stop_streaming()
+                    elif hasattr(instance, 'stop'):
+                        instance.stop()
                 
                 self._is_streaming = False
-                success_msg = self.config.get('core', 'camera_manager.messages.streaming_stopped', 
-                                            '✅ Streaming global arrêté')
-                logger.info(success_msg)
+                logger.info("✅ Streaming global arrêté")
+                return True
                 
             except Exception as e:
-                error_msg = self.config.get('core', 'camera_manager.messages.streaming_stop_error', 
-                                          'Erreur arrêt streaming: {error}')
-                logger.error(error_msg.format(error=str(e)))
+                logger.error(f"❌ Erreur arrêt streaming: {e}")
+                return False
     
     def get_camera_frame(self, alias: str) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
         """Récupère une frame d'une caméra - Format compatible camera_tab.py - Version corrigée"""
@@ -397,3 +405,76 @@ class CameraManager:
                                     'Unknown camera type: {type}')
             logger.error(error_msg.format(type=camera_type))
             return None
+        
+    def get_camera_stats(self, alias: str) -> Optional[Dict[str, Any]]:
+        """Retourne les statistiques d'une caméra spécifique"""
+        with self.lock:
+            if alias not in self.camera_instances:
+                logger.warning(f"⚠️ Caméra {alias} non trouvée pour stats")
+                return None
+            
+            try:
+                camera_instance = self.camera_instances[alias]
+                
+                # Vérifier si l'instance a une méthode get_info() (RealSense)
+                if hasattr(camera_instance, 'get_info'):
+                    stats = camera_instance.get_info()
+                    if stats:
+                        return {
+                            'fps': stats.get('fps', 0.0),
+                            'resolution': stats.get('color_resolution', 'N/A'),
+                            'depth_resolution': stats.get('depth_resolution', 'N/A'),
+                            'frame_count': stats.get('frame_count', 0),
+                            'status': stats.get('status', 'unknown'),
+                            'device_serial': stats.get('device_serial', 'unknown')
+                        }
+                
+                # Méthode alternative pour autres types de caméras
+                elif hasattr(camera_instance, 'current_fps'):
+                    return {
+                        'fps': getattr(camera_instance, 'current_fps', 0.0),
+                        'resolution': 'N/A',
+                        'depth_resolution': 'N/A',
+                        'frame_count': getattr(camera_instance, 'frame_count', 0),
+                        'status': 'active' if getattr(camera_instance, 'is_streaming', False) else 'inactive',
+                        'device_serial': getattr(camera_instance, 'serial', 'unknown')
+                    }
+                
+                # Statistiques basiques par défaut
+                else:
+                    return {
+                        'fps': 0.0,
+                        'resolution': 'N/A',
+                        'depth_resolution': 'N/A',
+                        'frame_count': 0,
+                        'status': 'active',
+                        'device_serial': 'unknown'
+                    }
+                    
+            except Exception as e:
+                logger.error(f"❌ Erreur récupération stats {alias}: {e}")
+                return None
+
+    def get_global_stats(self) -> Dict[str, Any]:
+        """Retourne les statistiques globales du CameraManager"""
+        with self.lock:
+            active_count = len(self.camera_instances)
+            streaming_count = 0
+            total_fps = 0.0
+            
+            for alias, instance in self.camera_instances.items():
+                if hasattr(instance, 'is_streaming') and instance.is_streaming:
+                    streaming_count += 1
+                
+                stats = self.get_camera_stats(alias)
+                if stats:
+                    total_fps += stats.get('fps', 0.0)
+            
+            return {
+                'active_cameras': active_count,
+                'streaming_cameras': streaming_count,
+                'total_fps': total_fps,
+                'average_fps': total_fps / active_count if active_count > 0 else 0.0,
+                'detected_cameras': len(self.cameras),
+                'last_detection': getattr(self, '_last_detection_time', 0)
+            }
