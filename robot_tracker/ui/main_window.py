@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QFont, QAction, QPalette, QColor
 import sys
 import logging
+import time
 
 from .camera_tab import CameraTab
 from .trajectory_tab import TrajectoryTab
@@ -247,96 +248,111 @@ class MainWindow(QMainWindow):
         toolbar.addAction(aruco_generator_action)
     
     def create_status_bar(self):
-        """Crée la barre de statut"""
+        """Crée une barre de statut améliorée pour le tracking"""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
-        # Labels de statut
+        # Indicateurs de statut
         self.camera_status = QLabel("Caméra: Arrêtée")
-        self.tracking_status = QLabel("Tracking: Inactif")
-        self.connection_status = QLabel("Signaux: En attente")
+        self.camera_status.setMinimumWidth(120)
         
+        self.tracking_status = QLabel("Tracking: Inactif")
+        self.tracking_status.setMinimumWidth(120)
+        
+        self.detection_status = QLabel("Détections: --")
+        self.detection_status.setMinimumWidth(150)
+        
+        self.connection_status = QLabel("Signaux: --")
+        self.connection_status.setMinimumWidth(100)
+        
+        # Ajout à la barre de statut
         self.status_bar.addWidget(self.camera_status)
-        self.status_bar.addPermanentWidget(self.tracking_status)
-        self.status_bar.addPermanentWidget(self.connection_status)
+        self.status_bar.addWidget(QLabel("|"))
+        self.status_bar.addWidget(self.tracking_status)
+        self.status_bar.addWidget(QLabel("|"))
+        self.status_bar.addWidget(self.detection_status)
+        self.status_bar.addWidget(QLabel("|"))
+        self.status_bar.addWidget(self.connection_status)
+        
+        # Message principal
+        self.status_bar.showMessage("Prêt")
+        
+        logger.debug("📊 Barre de statut améliorée créée")
     
     def connect_inter_tab_signals(self):
-        """Connecte les signaux inter-onglets avec signaux disponibles"""
+        """Connecte les signaux entre onglets (architecture maître-esclave corrigée)"""
         try:
+            connections_made = 0
+            logger.info("🔗 Connexion signaux inter-onglets v1.7...")
+            
             camera_tab = self.tabs.get('camera')
             target_tab = self.tabs.get('target')
             
             if not camera_tab or not target_tab:
-                logger.warning("⚠️ Onglets principaux manquants pour signaux")
-                self.connection_status.setText("Signaux: Onglets manquants")
+                logger.warning("⚠️ Onglets Camera ou Target manquants pour signaux")
                 return
             
-            connections_made = 0
+            # === ARCHITECTURE MAÎTRE (Camera) → ESCLAVE (Target) ===
             
-            # === SIGNAUX MAÎTRE (CameraTab) → ESCLAVE (TargetTab) ===
-            
-            # 1. Ouverture de caméra (utilise camera_opened au lieu de camera_selected)
+            # 1. Signal sélection caméra
             if hasattr(camera_tab, 'camera_opened') and hasattr(target_tab, '_on_camera_changed'):
                 camera_tab.camera_opened.connect(target_tab._on_camera_changed)
                 connections_made += 1
                 logger.info("📡 Signal camera_opened → target._on_camera_changed")
-            else:
-                logger.warning("⚠️ Signal camera_opened non disponible")
             
-            # 2. Fermeture de caméra
-            if hasattr(camera_tab, 'camera_closed') and hasattr(target_tab, '_on_camera_changed'):
-                # Trigger aussi sur fermeture pour rafraîchir l'état
-                camera_tab.camera_closed.connect(lambda alias: target_tab._check_camera_status())
-                connections_made += 1
-                logger.info("📡 Signal camera_closed → target._check_camera_status")
-            
-            # 3. Démarrage streaming  
+            # 2. Signal démarrage streaming
             if hasattr(camera_tab, 'streaming_started') and hasattr(target_tab, '_on_streaming_started'):
                 camera_tab.streaming_started.connect(target_tab._on_streaming_started)
                 connections_made += 1
                 logger.info("📡 Signal streaming_started → target._on_streaming_started")
-            else:
-                logger.warning("⚠️ Signal streaming_started non disponible")
             
-            # 4. Arrêt streaming
+            # 3. Signal arrêt streaming
             if hasattr(camera_tab, 'streaming_stopped') and hasattr(target_tab, '_on_streaming_stopped'):
                 camera_tab.streaming_stopped.connect(target_tab._on_streaming_stopped)
                 connections_made += 1
                 logger.info("📡 Signal streaming_stopped → target._on_streaming_stopped")
-            else:
-                logger.warning("⚠️ Signal streaming_stopped non disponible")
             
-            # === SIGNAUX FEEDBACK ESCLAVE → MAÎTRE ===
+            # 4. Signal fermeture caméra
+            if hasattr(camera_tab, 'camera_closed') and hasattr(target_tab, '_on_camera_changed'):
+                camera_tab.camera_closed.connect(lambda: target_tab._on_camera_changed(None))
+                connections_made += 1
+                logger.info("📡 Signal camera_closed → target._on_camera_changed(None)")
             
-            # 5. Statut tracking vers système
+            # === SIGNAUX RETOUR TARGET → SYSTÈME ===
+            
+            # 5. Tracking démarré/arrêté vers MainWindow
             if hasattr(target_tab, 'tracking_started'):
                 target_tab.tracking_started.connect(self._on_tracking_started)
                 connections_made += 1
-                logger.info("📡 Signal target.tracking_started → main._on_tracking_started")
+                logger.info("📡 Signal tracking_started → main._on_tracking_started")
             
             if hasattr(target_tab, 'tracking_stopped'):
                 target_tab.tracking_stopped.connect(self._on_tracking_stopped)
                 connections_made += 1
-                logger.info("📡 Signal target.tracking_stopped → main._on_tracking_stopped")
+                logger.info("📡 Signal tracking_stopped → main._on_tracking_stopped")
             
             # 6. Détections vers autres onglets (si disponibles)
-            trajectory_tab = self.tabs.get('trajectory')
-            if (hasattr(target_tab, 'target_detected') and trajectory_tab and 
-                hasattr(trajectory_tab, '_on_target_detected')):
-                target_tab.target_detected.connect(trajectory_tab._on_target_detected)
+            if hasattr(target_tab, 'target_detected'):
+                target_tab.target_detected.connect(self._on_target_detected_global)
                 connections_made += 1
-                logger.info("📡 Signal target_detected → trajectory._on_target_detected")
-            
-            # === SIGNAUX DE STATUT GLOBAUX ===
+                logger.info("📡 Signal target_detected → main._on_target_detected_global")
+                
+                # Vers onglet trajectoire si disponible
+                trajectory_tab = self.tabs.get('trajectory')
+                if trajectory_tab and hasattr(trajectory_tab, '_on_target_detected'):
+                    target_tab.target_detected.connect(trajectory_tab._on_target_detected)
+                    connections_made += 1
+                    logger.info("📡 Signal target_detected → trajectory._on_target_detected")
             
             # 7. Status changes pour barre de statut
-            for tab_name, tab_instance in self.tabs.items():
-                if hasattr(tab_instance, 'status_changed'):
-                    tab_instance.status_changed.connect(self._on_tab_status_changed)
-                    connections_made += 1
+            if hasattr(target_tab, 'status_changed'):
+                target_tab.status_changed.connect(self._on_target_status_changed)
+                connections_made += 1
+                logger.info("📡 Signal status_changed → main._on_target_status_changed")
             
-            # Mise à jour de la barre de statut
-            self.connection_status.setText(f"Signaux: {connections_made} connectés")
+            # === MISE À JOUR STATUT ===
+            if hasattr(self, 'connection_status'):
+                self.connection_status.setText(f"Signaux: {connections_made} connectés")
             
             if connections_made > 0:
                 logger.info(f"✅ Architecture maître-esclave: {connections_made} signaux connectés")
@@ -345,34 +361,52 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             logger.error(f"❌ Erreur connexion signaux inter-onglets: {e}")
-            self.connection_status.setText("Signaux: Erreur")
-            # Ne pas interrompre le démarrage pour autant
+            if hasattr(self, 'connection_status'):
+                self.connection_status.setText("Signaux: Erreur")
     
     def _on_tracking_started(self):
         """Callback global quand le tracking démarre"""
         logger.info("🎬 Tracking global démarré")
-        self.tracking_status.setText("Tracking: Actif")
+        
+        # Mise à jour barre de statut
+        if hasattr(self, 'tracking_status'):
+            self.tracking_status.setText("Tracking: 🎬 Actif")
         
         # Notification à tous les onglets intéressés
         for tab_name, tab in self.tabs.items():
             if hasattr(tab, '_on_global_tracking_started') and tab_name != 'target':
                 try:
                     tab._on_global_tracking_started()
+                    logger.debug(f"📡 Notification tracking start → {tab_name}")
                 except Exception as e:
                     logger.warning(f"⚠️ Erreur notification tracking {tab_name}: {e}")
+        
+        # Mise à jour titre fenêtre
+        current_title = self.windowTitle()
+        if "[TRACKING]" not in current_title:
+            self.setWindowTitle(f"{current_title} [TRACKING]")
     
     def _on_tracking_stopped(self):
         """Callback global quand le tracking s'arrête"""
         logger.info("⏹️ Tracking global arrêté")
-        self.tracking_status.setText("Tracking: Inactif")
+        
+        # Mise à jour barre de statut
+        if hasattr(self, 'tracking_status'):
+            self.tracking_status.setText("Tracking: ⏹️ Inactif")
         
         # Notification à tous les onglets intéressés
         for tab_name, tab in self.tabs.items():
             if hasattr(tab, '_on_global_tracking_stopped') and tab_name != 'target':
                 try:
                     tab._on_global_tracking_stopped()
+                    logger.debug(f"📡 Notification tracking stop → {tab_name}")
                 except Exception as e:
                     logger.warning(f"⚠️ Erreur notification tracking {tab_name}: {e}")
+        
+        # Mise à jour titre fenêtre
+        current_title = self.windowTitle()
+        if "[TRACKING]" in current_title:
+            self.setWindowTitle(current_title.replace(" [TRACKING]", ""))
     
     def _on_tab_status_changed(self, status_info):
         """Callback pour les changements de statut des onglets"""
@@ -494,3 +528,103 @@ class MainWindow(QMainWindow):
             logger.error(f"❌ Erreur fermeture: {e}")
         
         event.accept()
+
+    def _on_target_detected_global(self, detection_data: dict):
+        """Callback global pour les détections de cibles"""
+        try:
+            targets_count = len(detection_data.get('targets', []))
+            timestamp = detection_data.get('timestamp', time.time())
+            
+            logger.debug(f"🎯 Détection globale: {targets_count} cibles @ {timestamp}")
+            
+            # Mise à jour statistiques globales
+            if not hasattr(self, '_global_detection_stats'):
+                self._global_detection_stats = {
+                    'total_detections': 0,
+                    'last_detection_time': 0,
+                    'detection_rate': 0.0
+                }
+            
+            self._global_detection_stats['total_detections'] += targets_count
+            self._global_detection_stats['last_detection_time'] = timestamp
+            
+            # Calcul taux de détection (détections/seconde)
+            if hasattr(self, '_last_detection_timestamp'):
+                time_diff = timestamp - self._last_detection_timestamp
+                if time_diff > 0:
+                    current_rate = targets_count / time_diff
+                    # Moyenne mobile
+                    alpha = 0.1
+                    self._global_detection_stats['detection_rate'] = (
+                        alpha * current_rate + 
+                        (1 - alpha) * self._global_detection_stats['detection_rate']
+                    )
+            
+            self._last_detection_timestamp = timestamp
+            
+            # Mise à jour barre de statut avec dernière détection
+            if hasattr(self, 'detection_status') and targets_count > 0:
+                self.detection_status.setText(f"Dernière détection: {targets_count} cibles")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur traitement détection globale: {e}")
+
+    def _on_target_status_changed(self, status_info: dict):
+        """Callback pour les changements de statut de l'onglet target"""
+        try:
+            logger.debug(f"📊 Status Target changé: {status_info}")
+            
+            # Mise à jour des indicateurs de statut
+            if 'camera_ready' in status_info and hasattr(self, 'camera_status'):
+                camera_ready = status_info['camera_ready']
+                status_text = "🟢 Prête" if camera_ready else "🔴 Indisponible"
+                self.camera_status.setText(f"Caméra: {status_text}")
+            
+            if 'tracking' in status_info and hasattr(self, 'tracking_status'):
+                tracking_active = status_info['tracking']
+                status_text = "🎬 Actif" if tracking_active else "⏹️ Inactif"
+                self.tracking_status.setText(f"Tracking: {status_text}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur traitement status target: {e}")
+
+    def get_global_tracking_statistics(self) -> dict:
+        """Retourne les statistiques globales de tracking"""
+        if not hasattr(self, '_global_detection_stats'):
+            return {}
+        
+        return self._global_detection_stats.copy()
+    
+    def export_global_session_data(self, filepath: str) -> bool:
+        """Exporte les données de session globales"""
+        try:
+            session_data = {
+                'session_info': {
+                    'start_time': getattr(self, '_session_start_time', time.time()),
+                    'end_time': time.time(),
+                    'duration_seconds': time.time() - getattr(self, '_session_start_time', time.time())
+                },
+                'global_statistics': self.get_global_tracking_statistics(),
+                'tabs_data': {}
+            }
+            
+            # Collecte des données de chaque onglet
+            for tab_name, tab in self.tabs.items():
+                if hasattr(tab, 'get_tracking_data'):
+                    try:
+                        session_data['tabs_data'][tab_name] = tab.get_tracking_data()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Erreur export données {tab_name}: {e}")
+                        session_data['tabs_data'][tab_name] = {'error': str(e)}
+            
+            # Sauvegarde
+            import json
+            with open(filepath, 'w') as f:
+                json.dump(session_data, f, indent=2, default=str)
+            
+            logger.info(f"💾 Session globale exportée: {filepath}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur export session globale: {e}")
+            return False        

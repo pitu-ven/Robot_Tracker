@@ -18,23 +18,42 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon, QPainter, QPen, QColor
 
-# Import avec fallback pour éviter les erreurs d'import relatif
+logger = logging.getLogger(__name__)
+
 try:
     from core.aruco_config_loader import ArUcoConfigLoader
     from core.target_detector import TargetDetector, TargetType
     from core.roi_manager import ROIManager, ROIType
-except ImportError:
-    # Stubs temporaires pour éviter les erreurs lors du développement
+    COMPONENTS_AVAILABLE = True
+    logger.info("✅ Composants core importés avec succès")
+except ImportError as e:
+    logger.warning(f"⚠️ Import core échoué: {e}, utilisation de stubs")
+    COMPONENTS_AVAILABLE = False
+    
+    # Stubs améliorés avec plus de méthodes
     class ArUcoConfigLoader:
-        def __init__(self, config): self.detected_markers = {}
-        def scan_aruco_folder(self, folder_path): return {}
+        def __init__(self, config): 
+            self.detected_markers = {}
+            self.folder_path = None
+        def scan_aruco_folder(self, folder_path): 
+            self.folder_path = folder_path
+            return {}
         def get_detector_params(self): return {}
+        def get_latest_aruco_folder(self): return None
+        def validate_markers(self): return 0, []
+        def _detect_common_dictionary(self): return "4X4_50"
     
     class TargetDetector:
         def __init__(self, config): 
-            self.detection_enabled = {'aruco': True, 'reflective': True, 'led': True}
-        def detect_all_targets(self, frame): return []  # Correction ici
+            self.detection_enabled = {
+                'aruco': True, 'reflective': True, 'led': True
+            }
+            self.aruco_config = {}
+        def detect_all_targets(self, frame): return []
         def set_roi(self, roi): pass
+        def set_detection_enabled(self, target_type, enabled): pass
+        def _init_aruco_detector(self): pass
+        def update_detection_params(self, target_type, params): pass
     
     class TargetType:
         ARUCO = "aruco"
@@ -46,8 +65,11 @@ except ImportError:
             self.is_creating = False
             self.rois = []
         def start_roi_creation(self, roi_type): self.is_creating = True
-        def add_point(self, point): pass
+        def add_creation_point(self, point): return False
         def finish_roi(self): self.is_creating = False
+        def get_active_rois(self): return []
+        def has_active_rois(self): return False
+        def draw_rois_on_frame(self, frame): return frame
 
     class ROIType:
         RECTANGLE = "rectangle"
@@ -112,20 +134,51 @@ class TargetTab(QWidget):
         
         # Vérification initiale de l'état des caméras
         self._check_camera_status()
+        
+        # Validation des composants
+        validation_results = self._validate_component_methods()
+        if not all(validation_results.values()):
+            logger.warning("⚠️ Certains composants ne sont pas complètement fonctionnels")
+            # Émission d'un signal pour informer de l'état
+            self.status_changed.emit({
+                'component_validation': validation_results,
+                'timestamp': time.time()
+            })
     
     def _init_detection_components(self):
-        """Initialise les composants de détection"""
+        """Initialise les composants de détection avec validation"""
         try:
-            self.aruco_loader = ArUcoConfigLoader(self.config)
-            self.target_detector = TargetDetector(self.config)
-            self.roi_manager = ROIManager(self.config)
+            if COMPONENTS_AVAILABLE:
+                self.aruco_loader = ArUcoConfigLoader(self.config)
+                self.target_detector = TargetDetector(self.config)
+                self.roi_manager = ROIManager(self.config)
+                logger.info("✅ Composants de détection réels initialisés")
+            else:
+                # Fallback avec stubs
+                self.aruco_loader = ArUcoConfigLoader(self.config)
+                self.target_detector = TargetDetector(self.config)
+                self.roi_manager = ROIManager(self.config)
+                logger.warning("⚠️ Utilisation de stubs pour composants détection")
+                
+            # Validation post-initialisation
+            required_methods = [
+                (self.aruco_loader, ['scan_aruco_folder', 'get_latest_aruco_folder']),
+                (self.target_detector, ['detect_all_targets', 'set_detection_enabled']),
+                (self.roi_manager, ['start_roi_creation', 'get_active_rois'])
+            ]
             
+            for component, methods in required_methods:
+                for method in methods:
+                    if not hasattr(component, method):
+                        logger.warning(f"⚠️ Méthode manquante: {component.__class__.__name__}.{method}")
+                        
         except Exception as e:
-            logger.warning(f"⚠️ Composants détection non disponibles: {e}")
-            # Fallback avec stubs
+            logger.error(f"❌ Erreur initialisation composants: {e}")
+            # Fallback complet
             self.aruco_loader = ArUcoConfigLoader(self.config)
             self.target_detector = TargetDetector(self.config)
             self.roi_manager = ROIManager(self.config)
+
     
     def _auto_load_latest_aruco_folder(self):
         """Charge automatiquement le dernier dossier ArUco disponible"""
@@ -446,12 +499,29 @@ class TargetTab(QWidget):
         logger.info(f"✅ Caméra {camera_alias} sélectionnée pour détection")
     
     def _check_camera_status(self):
-        """Vérifie automatiquement l'état des caméras actives"""
+        """Vérifie automatiquement l'état des caméras actives - Version corrigée"""
         try:
-            # Utilisation de la propriété active_cameras au lieu de get_active_cameras()
-            active_cameras = self.camera_manager.active_cameras
-            
-            if not active_cameras:
+            # FIX: Utilisation sécurisée de active_cameras
+            if hasattr(self.camera_manager, 'active_cameras'):
+                active_cameras = getattr(self.camera_manager, 'active_cameras', {})
+                # Conversion en liste si c'est un dict
+                if isinstance(active_cameras, dict):
+                    active_camera_list = list(active_cameras.keys())
+                elif isinstance(active_cameras, list):
+                    active_camera_list = active_cameras
+                else:
+                    active_camera_list = []
+            else:
+                # Fallback si pas d'attribut active_cameras
+                try:
+                    if hasattr(self.camera_manager, 'get_active_cameras'):
+                        active_camera_list = self.camera_manager.get_active_cameras()
+                    else:
+                        active_camera_list = []
+                except:
+                    active_camera_list = []
+
+            if not active_camera_list:
                 # Aucune caméra active
                 if self.camera_ready:
                     logger.info("📷 Plus de caméras actives détectées")
@@ -461,9 +531,9 @@ class TargetTab(QWidget):
                     self.selected_camera_alias = None
             else:
                 # Au moins une caméra active
-                if not self.camera_ready or self.selected_camera_alias not in active_cameras:
+                if not self.camera_ready or self.selected_camera_alias not in active_camera_list:
                     # Auto-sélection de la première caméra disponible
-                    first_camera = active_cameras[0]
+                    first_camera = active_camera_list[0]
                     logger.info(f"📷 Auto-sélection caméra: {first_camera}")
                     self.selected_camera_alias = first_camera
                     self.camera_ready = True
@@ -526,72 +596,134 @@ class TargetTab(QWidget):
     # === MÉTHODES DE TRAITEMENT ===
     
     def _process_current_frame(self):
-        """Traite la frame courante avec optimisations performance"""
+        """Traite la frame courante avec optimisations performance - Version améliorée"""
         if not self.camera_ready or not self.selected_camera_alias:
             return
-        
+
         start_time = time.time()
-        
+
         try:
-            # Récupération frame avec timeout
-            success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
-            
+            # FIX: Récupération frame avec gestion d'erreur améliorée
+            if hasattr(self.camera_manager, 'get_camera_frame'):
+                success, frame, depth_frame = self.camera_manager.get_camera_frame(self.selected_camera_alias)
+            elif hasattr(self.camera_manager, 'get_latest_frame'):
+                # Fallback si méthode différente
+                result = self.camera_manager.get_latest_frame()
+                if isinstance(result, tuple) and len(result) >= 2:
+                    success, frame = result[0], result[1]
+                    depth_frame = result[2] if len(result) > 2 else None
+                else:
+                    success, frame, depth_frame = False, None, None
+            else:
+                logger.warning("⚠️ Aucune méthode de récupération frame disponible")
+                return
+
             if success and frame is not None:
                 self.current_frame = frame.copy()
                 self.current_depth_frame = depth_frame
-                
+
                 # Traitement de détection SEULEMENT si tracking actif
                 if self.is_tracking:
                     # Skip detection si frame précédente pas encore traitée
                     if not hasattr(self, '_processing_detection') or not self._processing_detection:
                         self._detect_targets_in_frame()
-                
+
                 # Affichage avec overlays
                 self._update_display()
-                
+
                 # Mesure performance réelle
                 processing_time = (time.time() - start_time) * 1000  # ms
-                if processing_time > 33:  # Plus de 33ms
+                if processing_time > 50:  # Plus de 50ms = problématique
                     logger.debug(f"⚠️ Frame lente: {processing_time:.1f}ms")
-                    
+
             else:
-                if not self.camera_manager.is_camera_open(self.selected_camera_alias):
-                    logger.warning(f"⚠️ Caméra {self.selected_camera_alias} non disponible")
-                    self._check_camera_status()
-            
+                # Vérification si caméra toujours disponible
+                if hasattr(self.camera_manager, 'is_camera_open'):
+                    if not self.camera_manager.is_camera_open(self.selected_camera_alias):
+                        logger.warning(f"⚠️ Caméra {self.selected_camera_alias} non disponible")
+                        self._check_camera_status()
+                
         except Exception as e:
             logger.error(f"❌ Erreur traitement frame: {e}")
+            # Force re-vérification état caméra
             self._check_camera_status()
     
     def _detect_targets_in_frame(self):
-        """Effectue la détection des cibles dans la frame courante"""
+        """Effectue la détection des cibles dans la frame courante - Version améliorée"""
         if self.current_frame is None:
             return
-        
+
         # Protection contre traitement concurrent
         if hasattr(self, '_processing_detection') and self._processing_detection:
             return
-        
+
         self._processing_detection = True
 
         try:
-            # CORRECTION: Utilisation de detect_all_targets au lieu de detect
-            detected_results = self.target_detector.detect_all_targets(self.current_frame)
+            # AMÉLIORATION: Validation du détecteur avant utilisation
+            if not hasattr(self.target_detector, 'detect_all_targets'):
+                logger.warning("⚠️ Méthode detect_all_targets non disponible")
+                return
+
+            # Détection avec timeout
+            import signal
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Détection timeout")
             
+            # Détection avec protection timeout (Linux/Mac uniquement)
+            try:
+                if hasattr(signal, 'SIGALRM'):  # Unix systems
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(1)  # 1 seconde max
+                
+                detected_results = self.target_detector.detect_all_targets(self.current_frame)
+                
+                if hasattr(signal, 'SIGALRM'):
+                    signal.alarm(0)  # Cancel timeout
+                    
+            except TimeoutError:
+                logger.warning("⚠️ Détection timeout, frame skippée")
+                detected_results = []
+            except Exception as detection_error:
+                logger.error(f"❌ Erreur détection: {detection_error}")
+                detected_results = []
+
+            # Validation du résultat
+            if not isinstance(detected_results, list):
+                logger.warning(f"⚠️ Format retour détection invalide: {type(detected_results)}")
+                detected_results = []
+
+            # Filtrage par ROI si actives
+            if hasattr(self.roi_manager, 'has_active_rois') and self.roi_manager.has_active_rois():
+                filtered_detections = []
+                for detection in detected_results:
+                    if hasattr(detection, 'center') and hasattr(self.roi_manager, 'point_in_any_active_roi'):
+                        if self.roi_manager.point_in_any_active_roi(detection.center):
+                            filtered_detections.append(detection)
+                detected_results = filtered_detections
+
             # Conversion des résultats pour compatibilité
             self.detected_targets = detected_results
-            
+
             # Création des infos de détection
             detection_info = {
                 'frame_size': self.current_frame.shape[:2],
                 'detection_count': len(detected_results),
                 'detection_time': time.time(),
-                'target_types': [result.target_type.value for result in detected_results] if detected_results else []
+                'target_types': []
             }
             
+            # Extraction sécurisée des types
+            for result in detected_results:
+                if hasattr(result, 'target_type'):
+                    if hasattr(result.target_type, 'value'):
+                        detection_info['target_types'].append(result.target_type.value)
+                    else:
+                        detection_info['target_types'].append(str(result.target_type))
+
             # Mise à jour des statistiques
             self._update_detection_stats(detection_info)
-            
+
             # Émission du signal pour autres onglets
             if detected_results:
                 self.target_detected.emit({
@@ -599,9 +731,9 @@ class TargetTab(QWidget):
                     'frame_info': detection_info,
                     'timestamp': time.time()
                 })
-        
+
         except Exception as e:
-            logger.error(f"❌ Erreur détection: {e}")
+            logger.error(f"❌ Erreur détection globale: {e}")
         finally:
             self._processing_detection = False
     
@@ -838,51 +970,90 @@ class TargetTab(QWidget):
             logger.error(f"❌ Erreur debug fichiers: {e}")
 
     def _scan_aruco_folder(self, folder_path):
-        """Scan du dossier ArUco sélectionné - Version améliorée"""
+        """Scan du dossier ArUco sélectionné - Version ultra-robuste"""
         try:
             folder_path = Path(folder_path)
-            logger.info(f"Scan du dossier ArUco: {folder_path}")
+            logger.info(f"🔍 Scan ArUco: {folder_path}")
+            
+            # Validation du dossier
+            if not folder_path.exists():
+                logger.error(f"❌ Dossier inexistant: {folder_path}")
+                self.aruco_folder_label.setText("❌ Dossier inexistant")
+                self.aruco_folder_label.setStyleSheet("QLabel { color: red; }")
+                return
+                
+            if not folder_path.is_dir():
+                logger.error(f"❌ Chemin n'est pas un dossier: {folder_path}")
+                self.aruco_folder_label.setText("❌ N'est pas un dossier")
+                self.aruco_folder_label.setStyleSheet("QLabel { color: red; }")
+                return
+
+            # Debug des fichiers
             self._debug_aruco_files(folder_path)
-            # Scan avec aruco_config_loader amélioré
-            detected_markers = self.aruco_loader.scan_aruco_folder(str(folder_path))
             
-            # Validation des marqueurs - NOUVELLE LIGNE
-            valid_count, issues = self.aruco_loader.validate_markers()
-            
+            # Scan avec gestion d'erreur robuste
+            detected_markers = {}
+            if hasattr(self.aruco_loader, 'scan_aruco_folder'):
+                try:
+                    detected_markers = self.aruco_loader.scan_aruco_folder(str(folder_path))
+                    if not isinstance(detected_markers, dict):
+                        logger.warning(f"⚠️ Format retour scan invalide: {type(detected_markers)}")
+                        detected_markers = {}
+                except Exception as scan_error:
+                    logger.error(f"❌ Erreur scan ArUco: {scan_error}")
+                    detected_markers = {}
+
+            # Validation avec gestion d'erreur
+            valid_count, issues = 0, []
+            if hasattr(self.aruco_loader, 'validate_markers'):
+                try:
+                    valid_count, issues = self.aruco_loader.validate_markers()
+                except Exception as validation_error:
+                    logger.warning(f"⚠️ Erreur validation: {validation_error}")
+
             # Mise à jour affichage
             self.aruco_folder_label.setText(f"📁 {folder_path.name}")
             self.aruco_folder_label.setStyleSheet("QLabel { color: green; }")
-            
+
             if detected_markers:
-                # NOUVELLE SECTION: Détection automatique du dictionnaire
-                dict_type = self.aruco_loader._detect_common_dictionary()
+                # Détection automatique du dictionnaire avec fallback
+                dict_type = "4X4_50"  # Valeur par défaut
+                if hasattr(self.aruco_loader, '_detect_common_dictionary'):
+                    try:
+                        dict_type = self.aruco_loader._detect_common_dictionary()
+                    except:
+                        logger.warning("⚠️ Détection dictionnaire échouée, utilisation 4X4_50")
+                
                 self.aruco_stats_label.setText(f"Marqueurs: {len(detected_markers)} détectés ({dict_type})")
                 
-                # NOUVELLE SECTION: Mise à jour du détecteur avec le bon dictionnaire
-                if hasattr(self.target_detector, 'aruco_config'):
-                    self.target_detector.aruco_config['dictionary_type'] = dict_type
-                    logger.info(f"🎯 Dictionnaire mis à jour: {dict_type}")
-                    # Réinitialiser le détecteur ArUco avec le bon dictionnaire
-                    self.target_detector._init_aruco_detector()
+                # Mise à jour du détecteur avec validation
+                if (hasattr(self.target_detector, 'aruco_config') and 
+                    hasattr(self.target_detector, '_init_aruco_detector')):
+                    try:
+                        self.target_detector.aruco_config['dictionary_type'] = dict_type
+                        logger.info(f"🎯 Dictionnaire mis à jour: {dict_type}")
+                        self.target_detector._init_aruco_detector()
+                    except Exception as detector_error:
+                        logger.warning(f"⚠️ Erreur mise à jour détecteur: {detector_error}")
             else:
                 self.aruco_stats_label.setText("Marqueurs: 0 détecté")
                 self.aruco_stats_label.setStyleSheet("QLabel { color: orange; }")
-            
-            # NOUVELLE SECTION: Affichage des problèmes de validation
+
+            # Affichage des problèmes de validation
             if issues:
                 logger.warning(f"⚠️ Problèmes détectés: {'; '.join(issues[:3])}")
                 if len(issues) > 3:
                     logger.warning(f"... et {len(issues) - 3} autres problèmes")
-            
-            # Activation boutons - LIGNE MODIFIÉE
+
+            # Activation boutons
             self.rescan_btn.setEnabled(True)
             self.debug_btn.setEnabled(True)
             self.config_btn.setEnabled(True)
-            
+
             logger.info(f"✅ ArUco: {len(detected_markers)} marqueurs détectés ({valid_count} valides)")
-            
+
         except Exception as e:
-            logger.error(f"❌ Erreur scan ArUco: {e}")
+            logger.error(f"❌ Erreur scan ArUco global: {e}")
             self.aruco_folder_label.setText("❌ Erreur de scan")
             self.aruco_folder_label.setStyleSheet("QLabel { color: red; }")
             self.aruco_stats_label.setText("Marqueurs: Erreur")
@@ -1243,6 +1414,46 @@ Types détectés: {', '.join(detection_info.get('target_types', []))}"""
     def force_camera_refresh(self):
         """Force la vérification de l'état des caméras"""
         self._check_camera_status()
+
+    def _validate_component_methods(self):
+        """Valide que tous les composants ont les méthodes requises"""
+        validation_results = {
+            'aruco_loader': True,
+            'target_detector': True, 
+            'roi_manager': True
+        }
+        
+        # Validation ArUcoConfigLoader
+        required_aruco_methods = [
+            'scan_aruco_folder', 'get_latest_aruco_folder', 
+            'get_detector_params', 'validate_markers'
+        ]
+        for method in required_aruco_methods:
+            if not hasattr(self.aruco_loader, method):
+                logger.warning(f"⚠️ ArUcoConfigLoader.{method} manquant")
+                validation_results['aruco_loader'] = False
+        
+        # Validation TargetDetector
+        required_detector_methods = [
+            'detect_all_targets', 'set_detection_enabled', 
+            'set_roi', '_init_aruco_detector'
+        ]
+        for method in required_detector_methods:
+            if not hasattr(self.target_detector, method):
+                logger.warning(f"⚠️ TargetDetector.{method} manquant")
+                validation_results['target_detector'] = False
+        
+        # Validation ROIManager
+        required_roi_methods = [
+            'start_roi_creation', 'get_active_rois', 
+            'has_active_rois', 'draw_rois_on_frame'
+        ]
+        for method in required_roi_methods:
+            if not hasattr(self.roi_manager, method):
+                logger.warning(f"⚠️ ROIManager.{method} manquant")
+                validation_results['roi_manager'] = False
+        
+        return validation_results
     
     # === NETTOYAGE ===
     
