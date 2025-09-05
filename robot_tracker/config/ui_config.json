@@ -190,7 +190,7 @@
     }
   },
   "logging": {
-    "console_verbosity": "Faible",
+    "console_verbosity": "Debug",
     "available_levels": [
       "Faible",
       "Moyenne",

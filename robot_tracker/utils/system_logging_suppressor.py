@@ -1,6 +1,6 @@
 # robot_tracker/utils/system_logging_suppressor.py
-# Version 1.0 - Suppresseur de logs système
-# Modification: Suppression complète des logs externes en mode Faible
+# Version 1.1 - Suppresseur amélioré avec redirection stderr
+# Modification: Amélioration suppression OpenCV et messages configuration
 
 import os
 import sys
@@ -10,13 +10,71 @@ from io import StringIO
 from typing import Optional
 
 
+class EnhancedOpenCVSuppressor:
+    """Suppresseur amélioré pour les messages OpenCV C++"""
+    
+    def __init__(self):
+        self.original_stderr = sys.stderr
+        self.is_active = False
+    
+    def activate(self):
+        """Active la suppression des messages OpenCV"""
+        if self.is_active:
+            return
+            
+        # Redirection stderr avec filtrage intelligent
+        sys.stderr = self._create_filtered_stderr()
+        self.is_active = True
+    
+    def deactivate(self):
+        """Désactive la suppression"""
+        if not self.is_active:
+            return
+            
+        sys.stderr = self.original_stderr
+        self.is_active = False
+    
+    def _create_filtered_stderr(self):
+        """Crée un stderr filtré pour OpenCV"""
+        class FilteredStderr:
+            def __init__(self, original_stderr):
+                self.original_stderr = original_stderr
+                
+            def write(self, data):
+                if isinstance(data, str):
+                    data_lower = data.lower()
+                    
+                    # Patterns OpenCV à supprimer
+                    opencv_patterns = [
+                        'msmf', 'obsensor', 'camera index', 'readsample',
+                        'grabframe', 'cap_msmf', 'videoio', 'onreadsample',
+                        'async readsample', 'error status: -2147024809',
+                        'global cap_msmf.cpp', 'global obsensor_uvc_stream_channel.cpp',
+                        'warn:0@', 'error:1@'
+                    ]
+                    
+                    # Vérifier si le message contient un pattern à supprimer
+                    if any(pattern in data_lower for pattern in opencv_patterns):
+                        return  # Supprimer le message
+                
+                # Écrire les autres messages normalement
+                self.original_stderr.write(data)
+                
+            def flush(self):
+                self.original_stderr.flush()
+                
+            def __getattr__(self, name):
+                return getattr(self.original_stderr, name)
+        
+        return FilteredStderr(self.original_stderr)
+
+
 class SystemLoggingSuppressor:
     """Suppresseur de logs système pour mode verbosité Faible"""
     
     def __init__(self):
-        self.original_stderr = None
-        self.original_stdout = None
-        self.devnull = None
+        self.opencv_suppressor = EnhancedOpenCVSuppressor()
+        self.original_log_filters = []
         
     def suppress_all_external_logs(self) -> None:
         """Supprime tous les logs externes (OpenCV, système, etc.)"""
@@ -24,16 +82,18 @@ class SystemLoggingSuppressor:
         # 1. Configuration des variables d'environnement OpenCV
         self._configure_opencv_environment()
         
-        # 2. Configuration du logging Python pour modules externes
+        # 2. Activation du suppresseur OpenCV amélioré
+        self.opencv_suppressor.activate()
+        
+        # 3. Configuration du logging Python pour modules externes
         self._configure_external_python_logging()
         
-        # 3. Redirection des sorties système si nécessaire
-        self._setup_system_redirection()
+        # 4. Configuration des filtres de logging
+        self._setup_logging_filters()
     
     def _configure_opencv_environment(self) -> None:
         """Configure les variables d'environnement pour OpenCV"""
         
-        # Variables pour supprimer les messages OpenCV
         opencv_env_vars = {
             'OPENCV_LOG_LEVEL': 'SILENT',
             'OPENCV_VIDEOIO_PRIORITY_MSMF': '0',
@@ -51,15 +111,8 @@ class SystemLoggingSuppressor:
         
         # Modules à mettre en silence complète
         silent_modules = [
-            'cv2',
-            'numpy',
-            'matplotlib',
-            'PIL',
-            'PyQt6',
-            'urllib3',
-            'requests',
-            'asyncio',
-            'concurrent.futures'
+            'cv2', 'numpy', 'matplotlib', 'PIL', 'PyQt6',
+            'urllib3', 'requests', 'asyncio', 'concurrent.futures'
         ]
         
         for module in silent_modules:
@@ -67,57 +120,49 @@ class SystemLoggingSuppressor:
             logger.setLevel(logging.CRITICAL)
             logger.propagate = False
     
-    def _setup_system_redirection(self) -> None:
-        """Configure la redirection des sorties système si nécessaire"""
+    def _setup_logging_filters(self) -> None:
+        """Configure des filtres de logging personnalisés"""
         
         # Redirection des warnings Python
         import warnings
         warnings.filterwarnings('ignore')
         
-        # Configuration du logger racine pour capturer les messages système
-        root_logger = logging.getLogger()
-        
-        # Ajout d'un filtre personnalisé pour les messages système
+        # Filtre pour le logger racine
         class SystemMessageFilter(logging.Filter):
             def filter(self, record):
-                # Filtrer les messages contenant des patterns spécifiques
                 message = record.getMessage().lower()
                 
                 # Patterns à supprimer en mode Faible
                 suppress_patterns = [
-                    'configuration',
-                    'chargée',
-                    'msmf',
-                    'obsensor',
-                    'camera index',
-                    'readSample',
-                    'grabFrame',
-                    'cap_msmf',
-                    'videoio'
+                    'configuration', 'chargée', 'loaded', 'msmf', 'obsensor',
+                    'camera index', 'readsample', 'grabframe', 'cap_msmf',
+                    'videoio', 'démarrage', 'initialisation'
                 ]
                 
-                # Si le message contient un pattern à supprimer et que ce n'est pas une erreur critique
+                # Supprimer si le message contient un pattern (sauf erreurs critiques)
                 if any(pattern in message for pattern in suppress_patterns):
                     if record.levelno < logging.ERROR:
                         return False
                 
                 return True
         
-        # Application du filtre au logger racine
-        root_logger.addFilter(SystemMessageFilter())
+        # Application du filtre
+        root_logger = logging.getLogger()
+        message_filter = SystemMessageFilter()
+        root_logger.addFilter(message_filter)
+        self.original_log_filters.append(message_filter)
     
     def restore_logging(self) -> None:
         """Restaure le logging normal"""
         
-        # Restauration des sorties système
-        if self.original_stderr:
-            sys.stderr = self.original_stderr
-        if self.original_stdout:
-            sys.stdout = self.original_stdout
-            
-        # Fermeture du devnull
-        if self.devnull:
-            self.devnull.close()
+        # Désactivation du suppresseur OpenCV
+        self.opencv_suppressor.deactivate()
+        
+        # Suppression des filtres ajoutés
+        root_logger = logging.getLogger()
+        for filter_obj in self.original_log_filters:
+            root_logger.removeFilter(filter_obj)
+        self.original_log_filters.clear()
     
     def __enter__(self):
         """Context manager entry"""
@@ -159,16 +204,19 @@ def apply_faible_mode_suppressions():
     suppressor = SystemLoggingSuppressor()
     suppressor.suppress_all_external_logs()
     
-    # Configuration spéciale OpenCV
+    # Configuration spéciale OpenCV avec gestion des versions
     try:
         import cv2
-        cv2.setLogLevel(cv2.LOG_LEVEL_SILENT)
+        # Tentative avec différentes constantes selon la version OpenCV
+        try:
+            cv2.setLogLevel(cv2.LOG_LEVEL_SILENT)
+        except AttributeError:
+            try:
+                cv2.setLogLevel(0)  # 0 = SILENT dans les anciennes versions
+            except:
+                pass  # Ignore si setLogLevel n'existe pas
     except ImportError:
         pass
-    
-    # Suppression des warnings Python
-    import warnings
-    warnings.simplefilter('ignore')
     
     return suppressor
 
@@ -186,7 +234,7 @@ def setup_minimal_logging_for_faible():
     
     # Application au logger racine
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()  # Supprime les handlers existants
+    root_logger.handlers.clear()
     root_logger.addHandler(console_handler)
     root_logger.setLevel(logging.WARNING)
     
@@ -194,7 +242,6 @@ def setup_minimal_logging_for_faible():
     apply_faible_mode_suppressions()
 
 
-# Fonction utilitaire pour l'initialisation depuis main.py
 def initialize_faible_mode():
     """Initialise complètement le mode Faible"""
     setup_minimal_logging_for_faible()
