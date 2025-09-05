@@ -1,134 +1,90 @@
 {
   "window": {
-    "title": "Robot Trajectory Controller v1.0",
-    "width": 1920,
-    "height": 1057,
-    "fullscreen": false,
+    "title": "Robot Trajectory Controller",
+    "width": 1400,
+    "height": 900,
     "resizable": true,
-    "center_on_screen": true
+    "center_on_startup": true
   },
   "tabs": {
-    "default_tab": 0,
-    "tab_names": [
-      "Caméra",
-      "Trajectoire",
-      "Cible",
-      "Calibration",
-      "Mesures"
-    ]
-  },
-  "camera_display": {
-    "single_view": {
-      "min_width": 320,
-      "min_height": 240,
-      "max_width": 800,
-      "max_height": 600,
-      "default_zoom": 1.0,
-      "zoom_min": 0.1,
-      "zoom_max": 5.0
+    "camera": {
+      "enabled": true,
+      "title": "📹 Caméra",
+      "tooltip": "Gestion des caméras et acquisition vidéo"
     },
-    "dual_view": {
-      "min_width": 240,
-      "min_height": 180,
-      "max_width": 600,
-      "max_height": 450,
-      "spacing": 10,
-      "margin": 5
+    "target": {
+      "enabled": true,
+      "title": "🎯 Cible",
+      "tooltip": "Détection et tracking des marqueurs"
     },
-    "colors": {
-      "rgb_border": "#007acc",
-      "depth_border": "#ff6600",
-      "default_border": "#ccc",
-      "background": "#f0f0f0",
-      "text_color": "#666"
+    "trajectory": {
+      "enabled": true,
+      "title": "📈 Trajectoire",
+      "tooltip": "Analyse des trajectoires et mouvements"
     },
-    "overlay": {
-      "font_size": 0.5,
-      "font_thickness": 1,
-      "text_spacing": 18,
-      "text_offset_x": 8,
-      "text_offset_y": 20,
-      "rgb_color": [
-        0,
-        255,
-        0
-      ],
-      "depth_color": [
-        0,
-        165,
-        255
-      ],
-      "crosshair_size": 15,
-      "crosshair_thickness": 1
+    "calibration": {
+      "enabled": true,
+      "title": "⚖️ Calibration",
+      "tooltip": "Calibration caméra et coordonnées"
     },
-    "view_names": {
-      "rgb": "Couleur",
-      "depth": "Profondeur",
-      "dual_context": "Dual"
+    "measures": {
+      "enabled": true,
+      "title": "📏 Mesures",
+      "tooltip": "Outils de mesure et métrologie"
     }
   },
   "camera_tab": {
-    "version": "4.3",
     "layout": {
       "control_panel_width": 300,
-      "display_area_width": 900,
-      "grid_spacing": 15,
-      "max_columns_single": 3,
-      "max_columns_dual": 2
+      "video_display_min_height": 400,
+      "controls_bar_height": 60,
+      "status_bar_height": 25,
+      "splitter_sizes": [
+        300,
+        1000
+      ]
     },
     "controls": {
-      "button_height": 35,
-      "combo_height": 30,
-      "refresh_rate_min": 16,
-      "refresh_rate_max": 1000,
-      "refresh_rate_default": 50,
-      "zoom_range_min": 10,
-      "zoom_range_max": 500,
-      "zoom_default": 100,
-      "zoom_divisor": 100.0,
-      "stats_default_checked": true
+      "buttons": {
+        "scan_cameras": "🔍 Scanner",
+        "refresh": "🔄 Actualiser",
+        "start_stream": "▶️ Démarrer",
+        "stop_stream": "⏹️ Arrêter",
+        "capture_frame": "📸 Capturer",
+        "save_image": "💾 Sauvegarder",
+        "settings": "⚙️ Paramètres"
+      },
+      "tooltips": {
+        "scan_cameras": "Scanner les caméras disponibles",
+        "refresh": "Actualiser la liste des caméras",
+        "start_stream": "Démarrer l'acquisition vidéo",
+        "stop_stream": "Arrêter l'acquisition vidéo",
+        "capture_frame": "Capturer la frame actuelle",
+        "save_image": "Sauvegarder l'image capturée",
+        "settings": "Ouvrir les paramètres avancés"
+      }
     },
-    "labels": {
-      "detection_group": "🔍 Détection & Sélection",
-      "detect_button": "🔄 Détecter caméras",
-      "available_cameras": "Caméras disponibles:",
-      "open_button": "📷 Ouvrir",
-      "close_button": "❌ Fermer",
-      "streaming_group": "🎬 Streaming",
-      "start_button": "▶️ Démarrer",
-      "stop_button": "⏹️ Arrêter",
-      "refresh_rate": "Refresh UI (ms):",
-      "refresh_suffix": " ms",
-      "display_group": "🖼️ Affichage",
-      "show_depth": "Afficher vue profondeur",
-      "zoom": "Zoom:",
-      "zoom_initial": "1.0x",
-      "zoom_format": "{:.1f}x",
-      "show_stats": "Afficher statistiques",
-      "capture_group": "📸 Capture",
-      "capture_frame": "📸 Capturer frame",
-      "save_image": "💾 Sauvegarder image",
-      "stats_group": "📊 Statistiques",
-      "log_group": "📝 Journal",
-      "clear_log": "🗑️ Effacer log",
-      "no_camera_active": "Aucune caméra active\\n\\nSélectionnez et ouvrez une caméra\\npour voir le streaming temps réel"
-    },
-    "tooltips": {
-      "show_depth": "Active la vue profondeur à côté de la vue RGB (RealSense uniquement)",
-      "no_depth": "Vue profondeur disponible uniquement avec RealSense",
-      "depth_available": "Active la vue profondeur à côté de la vue RGB"
+    "video_display": {
+      "show_fps": true,
+      "show_timestamp": true,
+      "show_camera_info": true,
+      "default_zoom": 1.0,
+      "zoom_step": 0.1,
+      "max_zoom": 5.0,
+      "min_zoom": 0.1
     },
     "messages": {
-      "detecting": "🔍 Détection des caméras...",
-      "cameras_found": "✅ {count} caméra(s) détectée(s)",
-      "no_cameras": "⚠️ Aucune caméra détectée",
-      "detection_error": "Erreur détection: {error}",
-      "camera_selected": "📷 Caméra sélectionnée: {name}",
-      "no_selection": "⚠️ Aucune caméra sélectionnée",
-      "already_open": "⚠️ Caméra {alias} déjà ouverte",
-      "opening": "📷 Ouverture {name}...",
-      "opened_success": "✅ Caméra {alias} ouverte avec succès",
-      "open_failed": "❌ Échec ouverture {name}",
+      "no_cameras": "Aucune caméra détectée",
+      "scanning": "Recherche de caméras en cours...",
+      "camera_found": "Caméra détectée: {name}",
+      "connection_failed": "Échec de connexion à {name}",
+      "streaming_started": "Acquisition démarrée",
+      "streaming_stopped": "Acquisition arrêtée",
+      "frame_captured": "Frame capturée avec succès",
+      "save_success": "Image sauvegardée: {path}",
+      "save_failed": "Échec sauvegarde: {error}",
+      "opened": "✅ Caméra {name} ouverte",
+      "failed": "❌ Échec ouverture {name}",
       "open_error": "Erreur ouverture caméra: {error}",
       "closed": "✅ Caméra {alias} fermée",
       "close_error": "Erreur fermeture {alias}",
@@ -149,11 +105,9 @@
       "depth_disabled": "Désactivée",
       "camera_clicked": "🖱️ Clic sur caméra: {alias}",
       "no_camera_capture": "⚠️ Aucune caméra sélectionnée pour la capture",
-      "frame_captured": "📸 Frame capturée: {alias}",
       "capture_failed": "❌ Impossible de capturer une frame de {alias}",
       "capture_error": "Erreur capture frame: {error}",
       "no_camera_save": "⚠️ Aucune caméra sélectionnée pour la sauvegarde",
-      "save_success": "💾 Image RGB sauvegardée: {filepath}",
       "depth_save_success": "💾 Image profondeur sauvegardée: {filepath}",
       "save_error": "Erreur sauvegarde: {filepath}",
       "cleanup": "🔄 Nettoyage terminé"
@@ -202,7 +156,7 @@
       "timestamp_format": "%H:%M:%S",
       "message_format": "[{timestamp}] {message}"
     },
-    "display": {
+    "ui_elements": {
       "default_label_font_size": 14,
       "default_label_padding": 50,
       "default_label_border_radius": 10
@@ -233,6 +187,26 @@
       "frame_max_age": 0.5,
       "join_timeout": 1.0,
       "error_sleep": 0.1
+    }
+  },
+  "logging": {
+    "console_verbosity": "Faible",
+    "available_levels": [
+      "Faible",
+      "Moyenne",
+      "Debug"
+    ],
+    "descriptions": {
+      "Faible": "Erreurs et avertissements uniquement",
+      "Moyenne": "Informations importantes + erreurs/avertissements",
+      "Debug": "Tous les messages de débogage détaillés"
+    },
+    "file_logging": {
+      "enabled": true,
+      "log_file": "./logs/robot_tracker.log",
+      "max_file_size_mb": 10,
+      "backup_count": 3,
+      "level": "INFO"
     }
   },
   "theme": {
