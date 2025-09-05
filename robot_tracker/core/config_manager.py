@@ -1,6 +1,6 @@
 # robot_tracker/core/config_manager.py
-# Version 1.3 - Ajout support verbosité logging
-# Modification: Ajout méthodes pour gestion verbosité logging et validation
+# Version 1.4 - Ajout mode silencieux pour chargement
+# Modification: Mode silencieux pour éviter logs de chargement en mode Faible
 
 import json
 import logging
@@ -12,10 +12,11 @@ logger = logging.getLogger(__name__)
 class ConfigManager:
     """Gestionnaire de configuration principal avec support ArUco et logging"""
     
-    def __init__(self, config_dir: Optional[Union[str, Path]] = None):
+    def __init__(self, config_dir: Optional[Union[str, Path]] = None, silent_mode: bool = False):
         self.config_dir = Path(config_dir) if config_dir else Path(__file__).parent.parent / "config"
         self.configs = {}
         self.aruco_config = None
+        self.silent_mode = silent_mode
         
         # Chargement des configurations
         self.load_all_configs()
@@ -37,12 +38,18 @@ class ConfigManager:
                 try:
                     with open(config_path, 'r', encoding='utf-8') as f:
                         self.configs[config_type] = json.load(f)
-                    logger.info(f"Configuration {config_type} chargée")
+                    
+                    # Log seulement si pas en mode silencieux
+                    if not self.silent_mode:
+                        logger.info(f"Configuration {config_type} chargée")
+                        
                 except Exception as e:
-                    logger.error(f"Erreur chargement {config_type}: {e}")
+                    if not self.silent_mode:
+                        logger.error(f"Erreur chargement {config_type}: {e}")
                     self.configs[config_type] = {}
             else:
-                logger.warning(f"Fichier manquant: {filename}")
+                if not self.silent_mode:
+                    logger.warning(f"Fichier manquant: {filename}")
                 self.configs[config_type] = {}
     
     def get(self, section: str, key: str, default: Any = None) -> Any:
@@ -68,7 +75,8 @@ class ConfigManager:
             return default
             
         except Exception as e:
-            logger.debug(f"Clé non trouvée {section}.{key}: {e}")
+            if not self.silent_mode:
+                logger.debug(f"Clé non trouvée {section}.{key}: {e}")
             return default
     
     def set(self, section: str, key: str, value: Any) -> bool:
@@ -95,11 +103,13 @@ class ConfigManager:
             # Définition de la valeur finale
             current[key_parts[-1]] = value
             
-            logger.debug(f"Configuration {section}.{key} définie: {value}")
+            if not self.silent_mode:
+                logger.debug(f"Configuration {section}.{key} définie: {value}")
             return True
             
         except Exception as e:
-            logger.error(f"Erreur définition {section}.{key}: {e}")
+            if not self.silent_mode:
+                logger.error(f"Erreur définition {section}.{key}: {e}")
             return False
     
     # === MÉTHODES SPÉCIFIQUES AU LOGGING ===
@@ -115,7 +125,8 @@ class ConfigManager:
         # Validation du niveau
         available_levels = self.get('ui', 'logging.available_levels', ['Faible', 'Moyenne', 'Debug'])
         if verbosity not in available_levels:
-            logger.warning(f"Niveau verbosité '{verbosity}' invalide, utilisation de 'Moyenne'")
+            if not self.silent_mode:
+                logger.warning(f"Niveau verbosité '{verbosity}' invalide, utilisation de 'Moyenne'")
             return 'Moyenne'
             
         return verbosity
@@ -132,12 +143,13 @@ class ConfigManager:
         # Validation du niveau
         available_levels = self.get('ui', 'logging.available_levels', ['Faible', 'Moyenne', 'Debug'])
         if verbosity not in available_levels:
-            logger.error(f"Niveau verbosité '{verbosity}' invalide. Niveaux disponibles: {available_levels}")
+            if not self.silent_mode:
+                logger.error(f"Niveau verbosité '{verbosity}' invalide. Niveaux disponibles: {available_levels}")
             return False
         
         # Définition de la valeur
         success = self.set('ui', 'logging.console_verbosity', verbosity)
-        if success:
+        if success and not self.silent_mode:
             logger.info(f"Niveau de verbosité défini à: {verbosity}")
         
         return success
@@ -187,7 +199,8 @@ class ConfigManager:
             return current
             
         except Exception as e:
-            logger.debug(f"Clé ArUco non trouvée {key}: {e}")
+            if not self.silent_mode:
+                logger.debug(f"Clé ArUco non trouvée {key}: {e}")
             return default
     
     def _set_aruco_config(self, key: str, value: Any) -> bool:
@@ -211,11 +224,13 @@ class ConfigManager:
             # Définition de la valeur finale
             current[key_parts[-1]] = value
             
-            logger.debug(f"Configuration ArUco définie {key} = {value}")
+            if not self.silent_mode:
+                logger.debug(f"Configuration ArUco définie {key} = {value}")
             return True
             
         except Exception as e:
-            logger.error(f"Erreur définition ArUco {key}: {e}")
+            if not self.silent_mode:
+                logger.error(f"Erreur définition ArUco {key}: {e}")
             return False
     
     def get_aruco_config(self) -> Dict[str, Any]:
@@ -227,7 +242,8 @@ class ConfigManager:
     def save_config(self, config_type: str) -> bool:
         """Sauvegarde une configuration spécifique"""
         if config_type not in self.configs:
-            logger.error(f"Type de configuration inconnu: {config_type}")
+            if not self.silent_mode:
+                logger.error(f"Type de configuration inconnu: {config_type}")
             return False
         
         filename_map = {
@@ -240,7 +256,8 @@ class ConfigManager:
         
         filename = filename_map.get(config_type)
         if not filename:
-            logger.error(f"Pas de fichier défini pour: {config_type}")
+            if not self.silent_mode:
+                logger.error(f"Pas de fichier défini pour: {config_type}")
             return False
         
         try:
@@ -248,11 +265,13 @@ class ConfigManager:
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(self.configs[config_type], f, indent=2, ensure_ascii=False)
             
-            logger.info(f"Configuration {config_type} sauvegardée")
+            if not self.silent_mode:
+                logger.info(f"Configuration {config_type} sauvegardée")
             return True
             
         except Exception as e:
-            logger.error(f"Erreur sauvegarde {config_type}: {e}")
+            if not self.silent_mode:
+                logger.error(f"Erreur sauvegarde {config_type}: {e}")
             return False
     
     def save_all_configs(self) -> bool:
@@ -284,10 +303,12 @@ class ConfigManager:
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.configs[config_type] = json.load(f)
-            logger.info(f"Configuration {config_type} rechargée")
+            if not self.silent_mode:
+                logger.info(f"Configuration {config_type} rechargée")
             return True
         except Exception as e:
-            logger.error(f"Erreur rechargement {config_type}: {e}")
+            if not self.silent_mode:
+                logger.error(f"Erreur rechargement {config_type}: {e}")
             return False
     
     # === MÉTHODES UTILITAIRES ===
@@ -301,7 +322,8 @@ class ConfigManager:
         
         # Validation basique : vérifier que c'est un dictionnaire
         if not isinstance(config, dict):
-            logger.warning(f"Configuration '{config_type}' n'est pas un dictionnaire")
+            if not self.silent_mode:
+                logger.warning(f"Configuration '{config_type}' n'est pas un dictionnaire")
             return False
         
         # Validations spécifiques par type
@@ -340,16 +362,19 @@ class ConfigManager:
         try:
             export_path = Path(export_path)
             if config_type not in self.configs:
-                logger.error(f"Type de configuration inconnu: {config_type}")
+                if not self.silent_mode:
+                    logger.error(f"Type de configuration inconnu: {config_type}")
                 return False
             
             with open(export_path, 'w', encoding='utf-8') as f:
                 json.dump(self.configs[config_type], f, indent=2, ensure_ascii=False)
             
-            logger.info(f"Configuration '{config_type}' exportée vers: {export_path}")
+            if not self.silent_mode:
+                logger.info(f"Configuration '{config_type}' exportée vers: {export_path}")
             return True
         except Exception as e:
-            logger.error(f"Erreur lors de l'export: {e}")
+            if not self.silent_mode:
+                logger.error(f"Erreur lors de l'export: {e}")
             return False
     
     def import_config(self, config_type: str, import_path: str) -> bool:
@@ -357,15 +382,18 @@ class ConfigManager:
         try:
             import_path = Path(import_path)
             if not import_path.exists():
-                logger.error(f"Fichier d'import inexistant: {import_path}")
+                if not self.silent_mode:
+                    logger.error(f"Fichier d'import inexistant: {import_path}")
                 return False
             
             with open(import_path, 'r', encoding='utf-8') as f:
                 imported_config = json.load(f)
             
             self.configs[config_type] = imported_config
-            logger.info(f"Configuration '{config_type}' importée depuis: {import_path}")
+            if not self.silent_mode:
+                logger.info(f"Configuration '{config_type}' importée depuis: {import_path}")
             return True
         except Exception as e:
-            logger.error(f"Erreur lors de l'import: {e}")
+            if not self.silent_mode:
+                logger.error(f"Erreur lors de l'import: {e}")
             return False
